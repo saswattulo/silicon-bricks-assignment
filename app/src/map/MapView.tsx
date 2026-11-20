@@ -57,7 +57,7 @@ export default function MapView(p: Props) {
       container: el.current!,
       style: STYLE_URL,
       center: [100.5806, 13.72668],
-      zoom: 17,
+      zoom: window.innerWidth < 860 ? 16.2 : 17,
       pitch: 58,
       bearing: -28,
       maxPitch: 78,

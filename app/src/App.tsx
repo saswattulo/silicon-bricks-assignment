@@ -94,7 +94,7 @@ export default function App() {
     setRoads(DEMO_ROADS)
     setNearStation(true)
     setMode('view')
-    mapRef.current?.flyTo({ center: [100.5806, 13.72668], zoom: 17.3, pitch: 60, bearing: -28 })
+    mapRef.current?.flyTo({ center: [100.5806, 13.72668], zoom: 17, pitch: 58, bearing: -28 })
   }, [])
 
   const toggleRoad = useCallback((i: number) => {
