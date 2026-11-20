@@ -135,3 +135,13 @@ footer { padding-top: 14px; line-height: 1.5; }
   .sunbox { width: 200px; padding: 7px 9px; gap: 5px; font-size: 11.5px; }
   .sunbox .muted { display: none; }
 }
+
+/* structure picker + custom building editor */
+.system { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 6px; }
+.field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted, #6b7280); }
+.field select, .field input { font: inherit; font-size: 13px; color: var(--ink); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; background: #fff; min-width: 0; }
+.sysnote { line-height: 1.45; }
+.custom { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; background: #fbfaf8; }
+.custom .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.seg.wide.small button { font-size: 12.5px; padding: 6px; }
+.row button.danger { color: #b42318; border-color: #f1c4bf; margin-left: auto; }

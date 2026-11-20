@@ -39,6 +39,23 @@ export interface Inputs {
   type: BuildingType
   nearStation: boolean
   bonusPct: number // FAR bonus claimed, 0..20 (cl. 51-57)
+  system?: SystemSpec // structural system / custom building; defaults to cast-in-place concrete
+}
+
+/** How the building is built: storey heights, plate size, grid and efficiency. The use (condo,
+ *  hotel, office) still decides which zoning and parking rules apply. */
+export interface SystemSpec {
+  id: string
+  name: string
+  groundH: number
+  typH: number
+  lowGroundH: number
+  lowTypH: number
+  efficiency: number
+  unitArea: number
+  towerDepth: number
+  towerMaxLen: number
+  grid: number // structural bay in metres along the plate; 0 = free
 }
 
 export interface TypeSpec {
@@ -54,6 +71,7 @@ export interface TypeSpec {
   towerMaxLen: number
   parking: (gfaNonParking: number, units: number, large: boolean) => number
   parkingRule: string
+  grid?: number
 }
 
 // Parking: Ministerial Regulation No. 7 (B.E. 2517) as amended by No. 41 (B.E. 2537), Bangkok figures.
@@ -254,6 +272,31 @@ export interface Check {
   source: string
 }
 
+/** The rules spec for this use, with the chosen structural system's geometry swapped in. */
+export function specFor(inp: Pick<Inputs, 'type' | 'system'>): TypeSpec {
+  const base = TYPES[inp.type]
+  const sys = inp.system
+  if (!sys) return base
+  const spec: TypeSpec = {
+    ...base,
+    groundH: sys.groundH,
+    typH: sys.typH,
+    lowGroundH: sys.lowGroundH,
+    lowTypH: sys.lowTypH,
+    efficiency: sys.efficiency,
+    unitArea: inp.type === 'office' ? 0 : sys.unitArea,
+    towerDepth: sys.towerDepth,
+    towerMaxLen: sys.towerMaxLen,
+    grid: sys.grid,
+  }
+  if (inp.type === 'condo' && sys.unitArea >= 60) {
+    // BKK Ord. cl.84(3): one space per unit of 60 m² or more
+    spec.parking = (g, u, large) => Math.max(u, large ? Math.ceil(g / 120) : 0)
+    spec.parkingRule = '1 per unit (units 60 m² or more); large building ≥ 1 per 120 m²'
+  }
+  return spec
+}
+
 function useFor(t: BuildingType): Floor['use'] {
   return t === 'condo' ? 'residential' : t
 }
@@ -292,7 +335,8 @@ export function limits(inp: Inputs): Limits {
   }
   if (inp.type === 'hotel' && !inp.nearStation && maxRoad < zone.hotel.minRoad) {
     // ≤50 rooms
-    const maxGfa = (zone.hotel.freeRooms * TYPES.hotel.unitArea) / TYPES.hotel.efficiency
+    const hs = specFor(inp)
+    const maxGfa = (zone.hotel.freeRooms * hs.unitArea) / hs.efficiency
     if (maxGfa < gfaCap) {
       gfaCap = maxGfa
       gfaCapReason = `ย.8 cl.15(8): hotels limited to ${zone.hotel.freeRooms} rooms unless on a ≥${zone.hotel.minRoad} m road or within 500 m of a station`
@@ -309,7 +353,7 @@ export function limits(inp: Inputs): Limits {
 }
 
 function openSpaceRequired(inp: Inputs, L: Limits, gfa: number, maxPlate: number, xl: boolean): { req: number; why: string } {
-  const spec = TYPES[inp.type]
+  const spec = specFor(inp)
   const cands: [number, string][] = [
     [(L.zone.osrPct / 100) * gfa, `OSR ${L.zone.osrPct}% of floor area`],
     [(spec.residential ? 0.3 : 0.1) * maxPlate, `${spec.residential ? 30 : 10}% of largest floor (MR55 cl.33)`],
@@ -333,7 +377,7 @@ function bisect(lo: number, hi: number, ok: (t: number) => boolean, iters = 28):
 
 /** Concept A: low-rise below the 23 m high-rise line, footprint follows the plot. */
 export function lowRiseConcept(inp: Inputs, L: Limits): Concept {
-  const spec = TYPES[inp.type]
+  const spec = specFor(inp)
   const plane = L.plane!
   const n = Math.max(1, Math.floor((HIGH_RISE_M - 0.05 - spec.lowGroundH) / spec.lowTypH) + 1)
   const s = edgeSetbacks(inp, 3, 2) // 3 m sides on every floor (conservative, see DECISIONS)
@@ -418,7 +462,7 @@ export function lowRiseConcept(inp: Inputs, L: Limits): Concept {
 
 /** Concept B: tower on a parking podium, tower slab placed far from the road to climb the sky plane. */
 export function towerConcept(inp: Inputs, L: Limits): Concept {
-  const spec = TYPES[inp.type]
+  const spec = specFor(inp)
   const plane = L.plane!
   const s = edgeSetbacks(inp, 6, 6)
   const base6 = insetByEdges(inp.plot, s)
@@ -468,6 +512,9 @@ export function towerConcept(inp: Inputs, L: Limits): Concept {
   type Cand = { y0: number; x0: number; x1: number; depth: number }
   const cands: Cand[] = []
   const D = spec.towerDepth
+  const grid = spec.grid ?? 0
+  // On a structural grid, plate length is a whole number of bays.
+  const snap = (len: number) => (grid > 0 ? Math.floor(len / grid + 1e-6) * grid : len)
   for (let depth = D; depth >= Math.max(12, D * 0.6); depth -= 2) {
     if (ymax - ymin < depth) continue
     for (let y0 = ymax - depth; y0 >= ymin - 1e-6; y0 -= 1) {
@@ -481,7 +528,8 @@ export function towerConcept(inp: Inputs, L: Limits): Concept {
       if (!iv || !iv.length) continue
       for (const [x0, x1] of iv) {
         if (x1 - x0 < 12) continue
-        const len = Math.min(spec.towerMaxLen, x1 - x0)
+        const len = snap(Math.min(spec.towerMaxLen, x1 - x0))
+        if (len < 12) continue
         const cx = (x0 + x1) / 2
         cands.push({ y0, x0: cx - len / 2, x1: cx + len / 2, depth })
       }
@@ -609,7 +657,7 @@ interface AssembleArgs {
 }
 
 function assemble(inp: Inputs, L: Limits, a: AssembleArgs): Concept {
-  const spec = TYPES[inp.type]
+  const spec = specFor(inp)
   const floors = a.blocks.flatMap((b) => b.floors)
   const gfa = floors.reduce((s, f) => s + f.area, 0)
   const height = Math.max(0, ...floors.map((f) => f.z1))
@@ -653,7 +701,7 @@ function assemble(inp: Inputs, L: Limits, a: AssembleArgs): Concept {
 // ---------- Independent verification ----------
 
 export function verify(inp: Inputs, L: Limits, c: Concept): Check[] {
-  const spec = TYPES[inp.type]
+  const spec = specFor(inp)
   const zone = L.zone
   const plane = L.plane!
   const floors = c.blocks.flatMap((b) => b.floors)

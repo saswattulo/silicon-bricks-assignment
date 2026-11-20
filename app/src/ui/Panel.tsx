@@ -6,12 +6,15 @@ import {
   type BuildingType,
   type Concept,
   type Road,
+  type SystemSpec,
   HIGH_RISE_M,
   TYPES,
   fmt,
   roadSetback,
 } from '../rules/engine'
 import { FAR_TABLE } from '../rules/zones'
+import type { CustomBuilding } from '../rules/systems'
+import BuildingSystem from './BuildingSystem'
 import type { Mode } from '../map/MapView'
 
 interface Props {
@@ -33,6 +36,11 @@ interface Props {
   resetDemo: () => void
   autoDetect: () => void
   stale: boolean
+  system: SystemSpec
+  systemId: string
+  setSystemId: (id: string) => void
+  customs: CustomBuilding[]
+  setCustoms: (c: CustomBuilding[]) => void
 }
 
 const rai = (m2: number) => {
@@ -154,6 +162,15 @@ export default function Panel(p: Props) {
             </button>
           ))}
         </div>
+        <BuildingSystem
+          type={p.type}
+          setType={p.setType}
+          system={p.system}
+          systemId={p.systemId}
+          setSystemId={p.setSystemId}
+          customs={p.customs}
+          setCustoms={p.setCustoms}
+        />
         <label className="check">
           <input type="checkbox" checked={p.nearStation} onChange={(e) => p.setNearStation(e.target.checked)} />
           Within 500 m of a BTS/MRT platform <span className="muted">(demo plot: BTS Thong Lo)</span>

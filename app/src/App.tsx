@@ -2,6 +2,17 @@ import { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
 import type * as maplibregl from 'maplibre-gl'
 import MapView, { type Basemap, type EnvelopeMode, type Mode, type View } from './map/MapView'
 import { bangkokDate, shadowVector, sunPosition } from './geo/sun'
+import { clampCustom, presetsFor, type CustomBuilding } from './rules/systems'
+
+const CUSTOM_KEY = 'plot-envelope.custom-buildings.v1'
+function loadCustoms(): CustomBuilding[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(CUSTOM_KEY) ?? '[]')
+    return Array.isArray(v) ? v.filter((c) => c && typeof c.id === 'string' && ['condo', 'hotel', 'office'].includes(c.use)).map(clampCustom) : []
+  } catch {
+    return []
+  }
+}
 import { LocalFrame } from './geo/frame'
 import { ensureCCW, signedArea } from './geo/geom'
 import { analyse, type BuildingType, type Road } from './rules/engine'
@@ -31,7 +42,32 @@ function toCCW(ring: [number, number][]): [number, number][] {
 export default function App() {
   const [plot, setPlot] = useState<[number, number][]>(DEMO_PLOT)
   const [roads, setRoads] = useState<(Road | null)[]>(DEMO_ROADS)
-  const [type, setType] = useState<BuildingType>('condo')
+  const [type, setTypeRaw] = useState<BuildingType>('condo')
+  const [systemId, setSystemId] = useState('rc')
+  const [customs, setCustomsRaw] = useState<CustomBuilding[]>(loadCustoms)
+  const setCustoms = useCallback((c: CustomBuilding[]) => {
+    setCustomsRaw(c)
+    try {
+      localStorage.setItem(CUSTOM_KEY, JSON.stringify(c))
+    } catch {
+      /* private mode: keep for this session only */
+    }
+  }, [])
+  // Picking a use keeps a standard structure, but leaves a custom building made for another use.
+  const setType = useCallback(
+    (t: BuildingType) => {
+      setTypeRaw(t)
+      setSystemId((id) => {
+        const c = customs.find((x) => x.id === id)
+        return c && c.use !== t ? 'rc' : id
+      })
+    },
+    [customs],
+  )
+  const system = useMemo(
+    () => customs.find((c) => c.id === systemId && c.use === type) ?? presetsFor(type).find((s) => s.id === systemId) ?? presetsFor(type)[0],
+    [customs, systemId, type],
+  )
   const [nearStation, setNearStation] = useState(true)
   const [bonusPct, setBonusPct] = useState(0)
   const [mode, setMode] = useState<Mode>('view')
@@ -48,8 +84,8 @@ export default function App() {
 
   const frame = useMemo(() => new LocalFrame(centroidLL(plot)), [plot])
   const inputs = useMemo(
-    () => ({ plot: ensureCCW(frame.ringToLocal(plot)), roads, zone: 'ย.8' as const, type, nearStation, bonusPct }),
-    [frame, plot, roads, type, nearStation, bonusPct],
+    () => ({ plot: ensureCCW(frame.ringToLocal(plot)), roads, zone: 'ย.8' as const, type, nearStation, bonusPct, system }),
+    [frame, plot, roads, type, nearStation, bonusPct, system],
   )
   const bundle = useMemo(() => ({ inputs, frame }), [inputs, frame])
   const deferred = useDeferredValue(bundle)
@@ -133,6 +169,11 @@ export default function App() {
         resetDemo={resetDemo}
         autoDetect={autoDetect}
         stale={deferred !== bundle}
+        system={system}
+        systemId={systemId}
+        setSystemId={setSystemId}
+        customs={customs}
+        setCustoms={setCustoms}
       />
       <div className="stage">
         <MapView
