@@ -60,6 +60,8 @@ Note an easy trap: **Bangkok OSR is open space as a percentage of total floor ar
 | R8 | High-rise / extra-large residential: open space ≥30% of plot | MR33 cl. 6 | Caps footprint |
 | R9 | FAR ≤ zone FAR (+ bonus ≤20%) | 2013 plan cl. 15, 51-57 | Caps total floor area |
 | R10 | OSR ≥ zone OSR | 2013 plan cl. 15 | Caps footprint as a function of floor area |
+| R12 | Parking. Condo: 1 per unit only for units ≥60 m², but any building >2,000 m² (or ≥15 m high and >1,000 m²) needs ≥1 space per 120 m². Hotel: 10 for the first 30 rooms, +1 per 5 rooms up to 100, +1 per 10 above, and the same 1 per 120 m² floor for large buildings. Office: 1 per 60 m². Stall 2.4 × 5.0 m, 90° aisle 6 m | BKK Ord. 2544 cl. 83-88; MR 7 (B.E. 2517) as amended by MR 41 | Concepts convert lower floors to parking until the count is met; about 30 m² gross per space |
+| R13 | EIA: residential buildings with ≥80 units, or hotels with ≥80 rooms or ≥4,000 m², need an EIA report before permit | MoNRE notification of 19 Nov 2018, rows 30-31 | Information line only (time and cost, not geometry) |
 | R11 | Buildings >3 floors not on the road need 12 m fire space; exempt if building face toward the road is ≥1/8 of perimeter and within 20 m of the road | BKK Ord. cl. 52(6), 53 | Pass/fail per concept |
 
 ## 4. Calls where the law or data is unclear
@@ -70,7 +72,9 @@ Note an easy trap: **Bangkok OSR is open space as a percentage of total floor ar
 4. **Plot edge to road.** The user marks which plot edges face a public road and gives the right-of-way width. The plot boundary is taken as the road boundary (no future road-widening line). Road widths default to OpenStreetMap-informed estimates and must be confirmed by the user.
 5. **Floor area for FAR includes parking** (conservative; MR33 excludes only roof deck, external stairs and plant).
 6. **Public-open-space bonus (cl. 53)** applies to "public buildings" under the building control act; a pure condo arguably isn't one. The tool offers the rainwater and green-building bonuses (cl. 55-56) for all types and flags cl. 53 as hotel/office only.
-7. **Zone lookup.** The BMA's zoning GIS (cityplangis / 3d-cpd ArcGIS) could not be reached from our build environment, so the zone is a user input defaulting to ย.8, with a link to the BMA map to confirm. The tool does not claim to know a plot's zone.
+7. **Low-rise uses one side setback for all floors.** R4 allows 2 m up to 9 m and 3 m above. The low-rise envelope shows both steps, but the low-rise concept uses 3 m on every floor so the floor plates stack straight. This loses a little floor area and keeps the design buildable.
+8. **Unit and room counts are estimates**: net saleable area = floor area × efficiency (condo 72%, hotel 62%, office 75%), divided by an average unit (condo 35 m², hotel room 32 m²). These drive the parking and EIA lines only.
+9. **Zone lookup.** The BMA's zoning GIS (cityplangis / 3d-cpd ArcGIS) could not be reached from our build environment, so the zone is a user input defaulting to ย.8, with a link to the BMA map to confirm. The tool does not claim to know a plot's zone.
 
 ## 5. Sources
 
