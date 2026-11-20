@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import type { Design, DesignShape } from '../rules/engine'
 import { readPlan, readSide, type Pixels, type Reading } from './imageToDesign'
 
@@ -29,7 +29,17 @@ function Slider(p: { label: string; value: number; min: number; max: number; ste
   )
 }
 
-async function loadPixels(file: File, max = 320): Promise<{ px: Pixels; url: string }> {
+/** Bundled pictures that show how picture-to-draft works. Drawn for this tool, so they read reliably. */
+// hint: what the picture cannot show (floors for a plan, plan shape for a photo)
+const SAMPLES: { file: string; title: string; mode: 'plan' | 'side'; widthM: number; floorH?: number; hint?: Partial<Design> }[] = [
+  { file: 'round-office-plan.png', title: 'Round office tower', mode: 'plan', widthM: 28, hint: { towerFloors: 14, podiumFloors: 3, podiumFill: true, taper: 0 } },
+  { file: 'tapered-condo-photo.png', title: 'Tapered condo tower', mode: 'side', widthM: 24, hint: { shape: 'rect', depth: 20 } },
+  { file: 'l-condo-plan.png', title: 'L-shaped condo', mode: 'plan', widthM: 34, hint: { towerFloors: 5, podiumFloors: 3, podiumFill: false, taper: 0 } },
+  { file: 'house-photo.png', title: 'Two-storey house', mode: 'side', widthM: 14, floorH: 3.6, hint: { shape: 'rect', depth: 10 } },
+  { file: 'townhouses-plan.png', title: 'Row of townhouses', mode: 'plan', widthM: 40, hint: { towerFloors: 3, podiumFloors: 0, taper: 0 } },
+]
+
+async function loadPixels(file: Blob, max = 320): Promise<{ px: Pixels; url: string }> {
   const bmp = await createImageBitmap(file)
   const k = Math.min(1, max / Math.max(bmp.width, bmp.height))
   const w = Math.max(8, Math.round(bmp.width * k))
@@ -79,66 +89,78 @@ function preview(url: string, r: Reading): Promise<string> {
 
 export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
   const set = (patch: Partial<Design>) => setDesign({ ...d, ...patch })
-  const [pic, setPic] = useState<{ file: File; url: string; px: Pixels } | null>(null)
+  const [pic, setPic] = useState<{ sample: (typeof SAMPLES)[number]; url: string; px: Pixels } | null>(null)
+  const [gallery, setGallery] = useState(false)
   const [mode, setMode] = useState<'plan' | 'side'>('plan')
   const [widthM, setWidthM] = useState(32)
   const [reading, setReading] = useState<{ r: Reading; img: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  const fileRef = useRef<HTMLInputElement>(null)
 
   const analyse = async (p = pic, m = mode, w = widthM) => {
     if (!p) return
     setBusy(true)
-    const r = m === 'plan' ? readPlan(p.px, w) : readSide(p.px, w, floorH)
+    const r = m === 'plan' ? readPlan(p.px, w) : readSide(p.px, w, p.sample.floorH ?? floorH)
     setReading({ r, img: await preview(p.url, r) })
     setBusy(false)
   }
-  const onFile = async (f: File | undefined) => {
-    if (!f) return
+  const pick = async (sm: (typeof SAMPLES)[number]) => {
     setErr('')
+    setBusy(true)
     try {
-      const { px, url } = await loadPixels(f)
-      const p = { file: f, url, px }
+      const blob = await (await fetch(`${import.meta.env.BASE_URL}samples/${sm.file}`)).blob()
+      const { px, url } = await loadPixels(blob)
+      const p = { sample: sm, url, px }
       setPic(p)
-      // guess the view from the picture's proportions: tall pictures are usually elevations
-      const m = px.height > px.width * 1.25 ? 'side' : 'plan'
-      setMode(m)
-      await analyse(p, m, widthM)
+      setMode(sm.mode)
+      setWidthM(sm.widthM)
+      await analyse(p, sm.mode, sm.widthM)
     } catch {
       setReading(null)
       setPic(null)
-      setErr('That file could not be read as an image.')
+      setErr('The sample picture could not be loaded.')
     }
+    setBusy(false)
   }
   const useDraft = () => {
     if (!reading?.r.ok) return
     const dr = reading.r.draft
-    setDesign({ ...d, ...dr, shape: dr.shape ?? (d.shape === 'custom' ? 'rect' : d.shape), trim: false })
+    const hint = pic?.sample.hint ?? {}
+    setDesign({ ...d, offsetX: 0, offsetY: 0, rotation: 0, twist: 0, ...dr, ...hint, shape: dr.shape ?? hint.shape ?? (d.shape === 'custom' ? 'rect' : d.shape), trim: false })
     setPic(null)
     setReading(null)
+    setGallery(false)
   }
 
   return (
     <div className="designer">
       <div className="dhead">
         <b>Shape your own building</b>
-        <button className="link" onClick={() => fileRef.current?.click()}>
-          Start from a picture
+        <button className="link" onClick={() => setGallery((g) => !g)}>
+          {gallery ? 'Hide pictures' : 'Start from a picture'}
         </button>
-        <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => onFile(e.target.files?.[0] ?? undefined)} />
       </div>
+
+      {gallery && !pic && (
+        <div className="samples">
+          <div className="muted small">Pick a sample picture. The tool reads it and drafts a building you can then fine-tune.</div>
+          <div className="sgrid">
+            {SAMPLES.map((sm) => (
+              <button key={sm.file} onClick={() => pick(sm)} disabled={busy} title={sm.title}>
+                <img src={`${import.meta.env.BASE_URL}samples/${sm.file}`} alt={sm.title} loading="lazy" />
+                <span>{sm.title}</span>
+                <em>{sm.mode === 'plan' ? 'plan' : 'photo'}</em>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {err && <div className="error">{err}</div>}
       {pic && (
         <div className="picread">
-          <div className="seg wide small">
-            <button className={mode === 'plan' ? 'on' : ''} onClick={() => (setMode('plan'), analyse(pic, 'plan'))}>
-              Plan or sketch (from above)
-            </button>
-            <button className={mode === 'side' ? 'on' : ''} onClick={() => (setMode('side'), analyse(pic, 'side'))}>
-              Photo or elevation (side)
-            </button>
+          <div className="small">
+            <b>{pic.sample.title}</b> · read as {mode === 'plan' ? 'a plan (from above): the outline becomes the footprint' : 'a side view: height, floors, podium and taper'}
           </div>
           <label className="field inline">
             <span>About how wide is it? (m)</span>
@@ -157,9 +179,9 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
             <button className="primary" disabled={!reading?.r.ok} onClick={useDraft}>
               Use as draft
             </button>
-            <button onClick={() => (setPic(null), setReading(null))}>Cancel</button>
+            <button onClick={() => (setPic(null), setReading(null))}>Back to samples</button>
           </div>
-          <div className="muted small">Read in your browser. The picture is not uploaded anywhere. You can fine-tune everything below.</div>
+          <div className="muted small">Read in your browser. You can fine-tune everything below once it is a draft.</div>
         </div>
       )}
 

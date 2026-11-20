@@ -163,3 +163,9 @@ footer { padding-top: 14px; line-height: 1.5; }
 .picnotes { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.45; }
 .field.inline { flex-direction: row; align-items: center; justify-content: space-between; }
 .field.inline input { width: 80px; }
+.samples { display: flex; flex-direction: column; gap: 7px; }
+.sgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.sgrid button { position: relative; display: flex; flex-direction: column; gap: 3px; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 4px; font-size: 11px; color: var(--ink); text-align: left; }
+.sgrid button:hover { border-color: var(--ink); }
+.sgrid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 5px; background: #f3efe8; }
+.sgrid em { position: absolute; top: 7px; right: 7px; font-style: normal; font-size: 10px; background: rgba(255,255,255,.9); border-radius: 4px; padding: 0 4px; }

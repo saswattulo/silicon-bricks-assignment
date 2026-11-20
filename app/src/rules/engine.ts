@@ -1073,7 +1073,7 @@ export function designConcept(inp: Inputs, L: Limits, d: Design, env: { low: Env
   const extras = [taper ? `tapering ${Math.round(taper * 100)}%` : '', twist ? `twisting ${Math.round(clampN(d.twist, -180, 180))}°` : '', d.trim ? 'trimmed to the envelope' : ''].filter(Boolean)
   const c = assemble(inp, L, {
     id: 'design',
-    name: `Your design: ${towerN}-storey ${SHAPE_NAMES[d.shape]} tower`,
+    name: `Your design: ${totalN}-storey ${SHAPE_NAMES[d.shape]} ${totalN <= 4 ? 'building' : 'tower'}`,
     tagline: `${d.shape === 'circle' ? `${fmt(w)} m across` : `${fmt(w)} × ${fmt(dep)} m`}${podTxt}${extras.length ? ', ' + extras.join(', ') : ''}. Checked against the same rules as the other concepts.`,
     cls,
     blocks: [{ name: 'Your design', floors }],
