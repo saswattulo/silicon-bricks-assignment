@@ -51,7 +51,7 @@ export interface TypeSpec {
   unitArea: number // condo unit or hotel key, net m²
   towerDepth: number
   towerMaxLen: number
-  parking: (gfaNonParking: number, units: number) => number
+  parking: (gfaNonParking: number, units: number, large: boolean) => number
   parkingRule: string
 }
 
@@ -68,8 +68,9 @@ export const TYPES: Record<BuildingType, TypeSpec> = {
     unitArea: 35,
     towerDepth: 21,
     towerMaxLen: 60,
-    parking: (g) => Math.ceil(g / 120),
-    parkingRule: '1 space per 120 m² of floor area (Bangkok, MR 7 / MR 41)',
+    // Units are <60 m², so the per-unit rule (cl.84(3)) does not bite; the large-building rule does.
+    parking: (g, _u, large) => (large ? Math.ceil(g / 120) : 0),
+    parkingRule: 'Large building: 1 per 120 m² (units under 60 m² need none per unit)',
   },
   hotel: {
     label: 'Hotel',
@@ -82,8 +83,13 @@ export const TYPES: Record<BuildingType, TypeSpec> = {
     unitArea: 32,
     towerDepth: 19,
     towerMaxLen: 60,
-    parking: (_g, units) => Math.ceil(units / 5),
-    parkingRule: '1 space per 5 rooms (Bangkok, MR 7 / MR 41)',
+    parking: (g, rooms, large) => {
+      let n = rooms <= 0 ? 0 : 10
+      if (rooms > 30) n += Math.ceil((Math.min(rooms, 100) - 30) / 5)
+      if (rooms > 100) n += Math.ceil((rooms - 100) / 10)
+      return Math.max(n, large ? Math.ceil(g / 120) : 0)
+    },
+    parkingRule: '10 for first 30 rooms, +1 per 5 rooms to 100, +1 per 10 above; large building ≥ 1 per 120 m²',
   },
   office: {
     label: 'Office',
@@ -97,7 +103,7 @@ export const TYPES: Record<BuildingType, TypeSpec> = {
     towerDepth: 26,
     towerMaxLen: 50,
     parking: (g) => Math.ceil(g / 60),
-    parkingRule: '1 space per 60 m² of floor area (Bangkok, MR 7 / MR 41)',
+    parkingRule: '1 per 60 m² of office floor area',
   },
 }
 
@@ -542,7 +548,7 @@ export function towerConcept(inp: Inputs, L: Limits): Concept {
     // parking demand -> podium floors
     const nonPark = acc - podium.filter((f) => f.use === 'parking').reduce((a, f) => a + f.area, 0)
     const units = spec.unitArea ? Math.floor((tower.reduce((a, f) => a + f.area, 0) * spec.efficiency) / spec.unitArea) : 0
-    const need = spec.parking(nonPark, units)
+    const need = spec.parking(nonPark, units, true)
     const groundSpaces = podium[0] ? Math.floor((podium[0].area * 0.4) / PARKING_GROSS_M2) : 0
     const perFloor = podium[1] ? podium[1].area / PARKING_GROSS_M2 : podium[0] ? podium[0].area / PARKING_GROSS_M2 : 1
     const wanted = 1 + Math.max(0, Math.ceil((need - groundSpaces) / Math.max(1, perFloor)))
@@ -590,7 +596,8 @@ function assemble(inp: Inputs, L: Limits, a: AssembleArgs): Concept {
   const units = spec.unitArea ? Math.floor((programme * spec.efficiency) / spec.unitArea) : 0
   const parkingArea = floors.filter((f) => f.use === 'parking').reduce((s, f) => s + f.area, 0)
   const nonPark = gfa - parkingArea
-  const parkingRequired = spec.parking(nonPark, units)
+  const large = gfa > 2000 || (height >= 15 && gfa > 1000)
+  const parkingRequired = spec.parking(nonPark, units, large)
   // structured parking + share of ground floor + surface spaces in open space beyond the planted half
   const lobby = floors.filter((f) => f.use === 'lobby').reduce((s, f) => s + f.area, 0)
   let parkingProvided = Math.floor(parkingArea / PARKING_GROSS_M2) + Math.floor((lobby * 0.4) / PARKING_GROSS_M2)
@@ -822,7 +829,7 @@ export function verify(inp: Inputs, L: Limits, c: Concept): Check[] {
     required: `${c.parkingRequired} spaces: ${spec.parkingRule}`,
     actual: `${c.parkingProvided} spaces provided`,
     pass: c.parkingProvided >= c.parkingRequired,
-    source: 'MR 7 (2517) / MR 41 (2537)',
+    source: 'BKK Ord. 2544 cl.83-86; MR 7 / MR 41',
   })
 
   const eia = inp.type === 'office' ? c.gfa >= 10000 : c.units >= 80 || c.gfa >= 4000
@@ -832,7 +839,7 @@ export function verify(inp: Inputs, L: Limits, c: Concept): Check[] {
     required: inp.type === 'office' ? 'Triggered at ≥ 10,000 m²' : 'Triggered at ≥ 80 units/rooms or ≥ 4,000 m²',
     actual: eia ? 'EIA required (adds ~6-12 months)' : 'Not triggered',
     pass: null,
-    source: 'ONEP notification (thresholds to confirm)',
+    source: 'MoNRE EIA notification, 19 Nov 2018, rows 30-31',
   })
   return checks
 }
