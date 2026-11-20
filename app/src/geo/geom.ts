@@ -1,6 +1,6 @@
 // Planar geometry in a local metric frame (metres, x = east, y = north).
 // All regulatory distances are computed here, never in lon/lat.
-import pc from 'polygon-clipping'
+import ClipperLib from 'clipper-lib'
 
 export type Pt = [number, number]
 export type Ring = Pt[] // open ring (first point not repeated)
@@ -104,33 +104,69 @@ export function capsule(a: Pt, b: Pt, d: number, arcSeg = 10): Ring {
   return pts
 }
 
-function toPC(mp: MultiPoly): pc.MultiPolygon {
-  return mp.map((p) => p.map((r) => closeRing(r))) as pc.MultiPolygon
+const SCALE = 1000 // millimetre integer grid for robust booleans
+
+type IP = { X: number; Y: number }
+
+function ringToPath(r: Ring, wantPositive: boolean): IP[] {
+  const path = r.map(([x, y]) => ({ X: Math.round(x * SCALE), Y: Math.round(y * SCALE) }))
+  const pos = signedArea(r) > 0
+  return pos === wantPositive ? path : path.reverse()
 }
 
-function fromPC(mp: pc.MultiPolygon): MultiPoly {
-  return mp
-    .map((p) => p.map((r) => openRing(r as Pt[])).filter((r) => r.length >= 3))
-    .filter((p) => p.length > 0)
+function toPaths(mp: MultiPoly): IP[][] {
+  const out: IP[][] = []
+  for (const p of mp) p.forEach((r, i) => out.push(ringToPath(r, i === 0)))
+  return out
+}
+
+function pathToRing(path: IP[]): Ring {
+  return path.map((q) => [q.X / SCALE, q.Y / SCALE] as Pt)
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function fromTree(tree: any): MultiPoly {
+  const out: MultiPoly = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const visitOuter = (node: any) => {
+    const outer = ensureCCW(pathToRing(node.Contour()))
+    const holes: Ring[] = []
+    for (const h of node.Childs()) {
+      const hr = pathToRing(h.Contour())
+      holes.push(signedArea(hr) > 0 ? hr.reverse() : hr)
+      for (const island of h.Childs()) visitOuter(island)
+    }
+    if (outer.length >= 3) out.push([outer, ...holes.filter((h) => h.length >= 3)])
+  }
+  for (const n of tree.Childs()) visitOuter(n)
+  return out
+}
+
+function clip(type: number, subj: IP[][], clipP: IP[][]): MultiPoly {
+  const c = new ClipperLib.Clipper()
+  c.AddPaths(subj, ClipperLib.PolyType.ptSubject, true)
+  if (clipP.length) c.AddPaths(clipP, ClipperLib.PolyType.ptClip, true)
+  const tree = new ClipperLib.PolyTree()
+  c.Execute(type, tree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero)
+  return fromTree(tree)
 }
 
 export function union(...mps: MultiPoly[]): MultiPoly {
   const xs = mps.filter((m) => m.length)
   if (!xs.length) return []
-  if (xs.length === 1) return xs[0]
-  return fromPC(pc.union(toPC(xs[0]), ...xs.slice(1).map(toPC)))
+  return clip(ClipperLib.ClipType.ctUnion, xs.flatMap(toPaths), [])
 }
 
 export function intersection(a: MultiPoly, b: MultiPoly): MultiPoly {
   if (!a.length || !b.length) return []
-  return fromPC(pc.intersection(toPC(a), toPC(b)))
+  return clip(ClipperLib.ClipType.ctIntersection, toPaths(a), toPaths(b))
 }
 
 export function difference(a: MultiPoly, ...bs: MultiPoly[]): MultiPoly {
   const xs = bs.filter((m) => m.length)
   if (!a.length) return []
   if (!xs.length) return a
-  return fromPC(pc.difference(toPC(a), ...xs.map(toPC)))
+  return clip(ClipperLib.ClipType.ctDifference, toPaths(a), xs.flatMap(toPaths))
 }
 
 /**
@@ -141,20 +177,21 @@ export function insetByEdges(plot: Ring, setbacks: number[]): MultiPoly {
   const caps: MultiPoly = []
   for (let i = 0; i < plot.length; i++) {
     const d = setbacks[i]
-    if (d > 0.001) caps.push([capsule(plot[i], plot[(i + 1) % plot.length], d)])
+    if (d > 0.001) caps.push([capsule(plot[i], plot[(i + 1) % plot.length], d, 16)])
   }
-  const base: MultiPoly = [[plot]]
+  const base: MultiPoly = [[ensureCCW(plot)]]
   if (!caps.length) return base
-  return clean(difference(base, union(...caps.map((c) => [c]))))
+  return clean(difference(base, caps))
 }
 
-/** Uniform inset of an arbitrary multipolygon by d (all rings). */
+/** Uniform inset of a multipolygon by d (mitred corners: a design move, not a legal distance). */
 export function insetMP(mp: MultiPoly, d: number): MultiPoly {
-  if (d <= 0) return mp
-  const caps: MultiPoly = []
-  for (const p of mp)
-    for (const r of p) for (let i = 0; i < r.length; i++) caps.push([capsule(r[i], r[(i + 1) % r.length], d, 6)])
-  return clean(difference(mp, union(...caps.map((c) => [c]))))
+  if (d <= 0 || !mp.length) return mp
+  const co = new ClipperLib.ClipperOffset(2, 0.25 * SCALE)
+  co.AddPaths(toPaths(mp), ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon)
+  const tree = new ClipperLib.PolyTree()
+  co.Execute(tree, -d * SCALE)
+  return clean(fromTree(tree))
 }
 
 /** Keep the part of mp where signedDistToLine(p, a, b) >= minD (half-plane clip). */

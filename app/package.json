@@ -12,9 +12,9 @@
   "dependencies": {
     "@turf/area": "^7.4.0",
     "@turf/helpers": "^7.4.0",
+    "clipper-lib": "^6.4.2",
     "earcut": "^3.2.4",
     "maplibre-gl": "^6.19.0",
-    "polygon-clipping": "^0.15.7",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "terra-draw": "^1.40.0",
@@ -22,6 +22,7 @@
     "three": "^0.187.0"
   },
   "devDependencies": {
+    "@types/clipper-lib": "^6.4.0",
     "@types/earcut": "^3.0.0",
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
