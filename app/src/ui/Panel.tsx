@@ -257,7 +257,7 @@ export default function Panel(p: Props) {
       <footer className="muted small">
         Pre-design feasibility only, not a permit check. Rules: Bangkok Comprehensive Plan 2013, BMA Building Control Ordinance 2544,
         Ministerial Regulations 33 and 55. Context: © OpenStreetMap contributors, OpenFreeMap.{' '}
-        <a href="https://github.com/saswattulo/silicon-bricks-assignment/blob/main/docs/DECISIONS.md" target="_blank" rel="noreferrer">
+        <a href="https://github.com/saswattulo/silicon-bricks-assignment/blob/HEAD/docs/DECISIONS.md" target="_blank" rel="noreferrer">
           Sources and decisions
         </a>
       </footer>
