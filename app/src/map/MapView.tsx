@@ -46,6 +46,10 @@ export default function MapView(p: Props) {
   const props = useRef(p)
   props.current = p
   const bldLayers = useRef<{ id: string; filter: unknown }[]>([])
+  // Context buildings already hidden for the current plot. Only grows while the plot is
+  // unchanged: once hidden, a building no longer shows up in queries, so recomputing from
+  // scratch would un-hide it and loop forever.
+  const hidden = useRef<{ plot: string; ids: Set<string | number>; applied: string }>({ plot: '', ids: new Set(), applied: '' })
 
   // ---- init once
   useEffect(() => {
@@ -197,7 +201,9 @@ export default function MapView(p: Props) {
     if (!map || !bldLayers.current.length) return
     const { plot, frame } = props.current
     const ring = plot.map((q) => frame.toLocal(q))
-    const ids = new Set<string | number>()
+    const plotKey = JSON.stringify(plot)
+    if (hidden.current.plot !== plotKey) hidden.current = { plot: plotKey, ids: new Set(), applied: hidden.current.applied }
+    const ids = hidden.current.ids
     for (const { id } of bldLayers.current) {
       for (const f of map.queryRenderedFeatures({ layers: [id] })) {
         if (f.id === undefined) continue
@@ -212,8 +218,8 @@ export default function MapView(p: Props) {
       }
     }
     const key = [...ids].sort().join(',')
-    if ((hideBuildingsOnPlot as unknown as { key?: string }).key === key) return
-    ;(hideBuildingsOnPlot as unknown as { key?: string }).key = key
+    if (hidden.current.applied === key) return
+    hidden.current.applied = key
     for (const { id, filter } of bldLayers.current) {
       const hide = ['!', ['in', ['id'], ['literal', [...ids]]]]
       map.setFilter(id, (filter ? ['all', filter, hide] : hide) as maplibregl.FilterSpecification)
