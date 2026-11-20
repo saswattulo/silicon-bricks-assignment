@@ -65,7 +65,9 @@ export default function MapView(p: Props) {
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right')
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
 
-    map.on('load', () => {
+    // style.load fires once the style is parsed, without waiting for every tile, so the
+    // plot and massing appear immediately even on a slow connection.
+    map.once('style.load', () => {
       const style = map.getStyle()
       // Real 3D city: tone the basemap buildings to a neutral context grey.
       for (const l of style.layers) {
