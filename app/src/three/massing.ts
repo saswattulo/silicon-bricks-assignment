@@ -149,12 +149,14 @@ export class MassingLayer implements maplibregl.CustomLayerInterface {
   private camera = new THREE.Camera()
   private model = new THREE.Matrix4()
   private content = new THREE.Group()
+  private sun: THREE.DirectionalLight
 
   constructor() {
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.55))
     const sun = new THREE.DirectionalLight(0xffffff, 1.6)
     sun.position.set(-0.45, -0.6, 0.9) // from SW-ish, high (Bangkok sun)
     this.scene.add(sun)
+    this.sun = sun
     const fill = new THREE.DirectionalLight(0xffffff, 0.55)
     fill.position.set(0.6, 0.5, 0.4)
     this.scene.add(fill)
@@ -168,7 +170,16 @@ export class MassingLayer implements maplibregl.CustomLayerInterface {
   }
 
   setFrame(frame: LocalFrame) {
-    this.model = new THREE.Matrix4().makeTranslation(frame.ox, frame.oy, 0).scale(new THREE.Vector3(frame.s, -frame.s, frame.s))
+    this.model = new THREE.Matrix4().makeTranslation(frame.ox, frame.oy, 0).scale(new THREE.Vector3(frame.s, -frame.s, 1))
+  }
+
+  /** Light the massing from the actual sun when the shadow study is on. */
+  setSun(s: { altitude: number; azimuth: number } | null) {
+    if (s && s.altitude > 0) {
+      const c = Math.cos(s.altitude)
+      this.sun.position.set(Math.sin(s.azimuth) * c, Math.cos(s.azimuth) * c, Math.sin(s.altitude))
+    } else this.sun.position.set(-0.45, -0.6, 0.9)
+    this.map?.triggerRepaint()
   }
 
   setContent(groups: THREE.Object3D[]) {
@@ -192,12 +203,12 @@ export class MassingLayer implements maplibregl.CustomLayerInterface {
 
   render(_gl: WebGLRenderingContext | WebGL2RenderingContext, args: maplibregl.CustomRenderMethodInput) {
     if (!this.renderer) return
-    // MapLibre 6 hands custom layers a matrix in world-pixel units (0..worldSize),
-    // so scale our mercator-space model matrix up before composing. Done in float64
+    // MapLibre 6 hands custom layers a matrix that takes x, y in world pixels
+    // (0..worldSize) and z in metres, so scale x, y (mercator) up and leave z alone. Done in float64
     // here so the large offsets cancel before three.js uploads it as float32.
     const ws = (this.map as unknown as { transform?: { worldSize?: number } })?.transform?.worldSize ?? 512 * Math.pow(2, this.map?.getZoom() ?? 0)
     const m = new THREE.Matrix4().fromArray(args.modelViewProjectionMatrix as unknown as number[])
-    m.multiply(new THREE.Matrix4().makeScale(ws, ws, ws)).multiply(this.model)
+    m.multiply(new THREE.Matrix4().makeScale(ws, ws, 1)).multiply(this.model)
     this.camera.projectionMatrix = m
     this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert()
     this.renderer.resetState()

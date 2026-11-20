@@ -1,6 +1,7 @@
 import { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
 import type * as maplibregl from 'maplibre-gl'
-import MapView, { type Basemap, type EnvelopeMode, type Mode } from './map/MapView'
+import MapView, { type Basemap, type EnvelopeMode, type Mode, type View } from './map/MapView'
+import { bangkokDate, shadowVector, sunPosition } from './geo/sun'
 import { LocalFrame } from './geo/frame'
 import { ensureCCW, signedArea } from './geo/geom'
 import { analyse, type BuildingType, type Road } from './rules/engine'
@@ -39,6 +40,11 @@ export default function App() {
   const [showConcept, setShowConcept] = useState(true)
   const [basemap, setBasemap] = useState<Basemap>('map')
   const mapRef = useRef<maplibregl.Map | null>(null)
+  const [view, setView] = useState<View>('3d')
+  const [showContext, setShowContext] = useState(true)
+  const [shadowsOn, setShadowsOn] = useState(true)
+  const [month, setMonth] = useState(11) // 21 December: longest shadows of the year
+  const [hour, setHour] = useState(15)
 
   const frame = useMemo(() => new LocalFrame(centroidLL(plot)), [plot])
   const inputs = useMemo(
@@ -97,6 +103,11 @@ export default function App() {
     mapRef.current?.flyTo({ center: [100.5806, 13.72668], zoom: 17, pitch: 58, bearing: -28 })
   }, [])
 
+  const sunLL = centroidLL(plot)
+  const sun = useMemo(() => sunPosition(bangkokDate(2026, month, 21, hour), sunLL[1], sunLL[0]), [month, hour, sunLL[0], sunLL[1]]) // eslint-disable-line react-hooks/exhaustive-deps
+  const sv = shadowVector(sun)
+  const compass = (a: number) => ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(((a * 180) / Math.PI) / 45) % 8]
+
   const toggleRoad = useCallback((i: number) => {
     setRoads((prev) => prev.map((r, k) => (k === i ? (r ? null : { width: 10, name: 'Public road' }) : r)))
   }, [])
@@ -134,6 +145,9 @@ export default function App() {
           envelopeMode={envelopeMode}
           basemap={basemap}
           mode={mode}
+          sun={shadowsOn ? sun : null}
+          showContext={showContext}
+          view={view}
           onPlotChange={onPlotChange}
           onModeChange={setMode}
           onEdgeClick={toggleRoad}
@@ -158,13 +172,59 @@ export default function App() {
               Satellite
             </button>
           </div>
+          <div className="seg">
+            <button className={view === '3d' ? 'on' : ''} onClick={() => setView('3d')}>
+              3D view
+            </button>
+            <button className={view === 'top' ? 'on' : ''} onClick={() => setView('top')}>
+              Bird's-eye
+            </button>
+            <button className={showContext ? 'on' : ''} onClick={() => setShowContext((v) => !v)} title="Show or hide the surrounding buildings">
+              Surroundings
+            </button>
+          </div>
           <div className="legend">
             <span><i style={{ background: '#0e9f6e' }} />Low-rise envelope (&lt;23 m)</span>
             <span><i style={{ background: '#2563eb' }} />High-rise envelope (2:1 road plane)</span>
             <span><i style={{ background: '#f4efe6', border: '1px solid #8a7f72' }} />Homes / rooms / offices</span>
             <span><i style={{ background: '#9aa3ad' }} />Parking</span>
             <span><i style={{ background: '#d9c49a' }} />Lobby</span>
+            {shadowsOn && <span><i style={{ background: '#1e1b4b', opacity: 0.6 }} />Shadow of the design</span>}
+            {shadowsOn && showContext && <span><i style={{ background: '#334155', opacity: 0.4 }} />Shadow of surroundings</span>}
           </div>
+        </div>
+        <div className="overlay bottom-left sunbox">
+          <label className="sunhead">
+            <input type="checkbox" checked={shadowsOn} onChange={(e) => setShadowsOn(e.target.checked)} />
+            <b>Sun &amp; shadows</b>
+          </label>
+          {shadowsOn && (
+            <>
+              <div className="seg small">
+                {[
+                  [2, 'Mar'],
+                  [5, 'Jun'],
+                  [8, 'Sep'],
+                  [11, 'Dec'],
+                ].map(([m, l]) => (
+                  <button key={m} className={month === m ? 'on' : ''} onClick={() => setMonth(m as number)}>
+                    21 {l}
+                  </button>
+                ))}
+              </div>
+              <div className="sunrow">
+                <input type="range" min={7} max={18} step={0.25} value={hour} onChange={(e) => setHour(Number(e.target.value))} aria-label="Time of day" />
+                <span className="time">
+                  {String(Math.floor(hour)).padStart(2, '0')}:{String(Math.round((hour % 1) * 60)).padStart(2, '0')}
+                </span>
+              </div>
+              <div className="muted small">
+                {sv
+                  ? `Sun ${Math.round((sun.altitude * 180) / Math.PI)}° high in the ${compass(sun.azimuth)}; a 10 m wall casts ${(10 * Math.hypot(sv[0], sv[1])).toFixed(1)} m of shadow.`
+                  : 'Sun is down or too low for a shadow.'}
+              </div>
+            </>
+          )}
         </div>
         {mode !== 'view' && (
           <div className="overlay bottom-center hint">

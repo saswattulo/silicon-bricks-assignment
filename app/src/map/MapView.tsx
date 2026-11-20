@@ -4,7 +4,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { TerraDraw, TerraDrawPolygonMode, TerraDrawSelectMode } from 'terra-draw'
 import { TerraDrawMapLibreGLAdapter } from 'terra-draw-maplibre-gl-adapter'
 import type { LocalFrame } from '../geo/frame'
-import { type MultiPoly, pointInRing } from '../geo/geom'
+import { type MultiPoly, type Pt, ensureCCW, pointInRing, union } from '../geo/geom'
+import { prismShadow, shadowVector, type Sun } from '../geo/sun'
 import type { Analysis, Road } from '../rules/engine'
 import { MassingLayer, conceptGroup, envelopeGroup, plotFence } from '../three/massing'
 import type * as THREE from 'three'
@@ -12,6 +13,7 @@ import type * as THREE from 'three'
 export type Mode = 'view' | 'draw' | 'edit'
 export type EnvelopeMode = 'auto' | 'low' | 'high' | 'both' | 'off'
 export type Basemap = 'map' | 'satellite'
+export type View = '3d' | 'top'
 
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty'
 const SAT_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
@@ -27,6 +29,9 @@ interface Props {
   envelopeMode: EnvelopeMode
   basemap: Basemap
   mode: Mode
+  sun: Sun | null // null = shadows off
+  showContext: boolean
+  view: View
   onPlotChange: (ll: [number, number][], fromDraw: boolean) => void
   onModeChange: (m: Mode) => void
   onEdgeClick: (i: number) => void
@@ -82,6 +87,12 @@ export default function MapView(p: Props) {
         }
       }
       const firstSymbol = style.layers.find((l) => l.type === 'symbol')?.id
+      // Shadows sit on the ground: below the 3D buildings, above roads and land.
+      const firstBuilding = bldLayers.current[0]?.id ?? firstSymbol
+      for (const s of ['shadow-context', 'shadow-concept'] as const)
+        map.addSource(s, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+      map.addLayer({ id: 'shadow-context', type: 'fill', source: 'shadow-context', paint: { 'fill-color': '#334155', 'fill-opacity': 0.22 } }, firstBuilding)
+      map.addLayer({ id: 'shadow-concept', type: 'fill', source: 'shadow-concept', paint: { 'fill-color': '#1e1b4b', 'fill-opacity': 0.38 } }, firstBuilding)
       map.addSource('sat', { type: 'raster', tiles: [SAT_URL], tileSize: 256, maxzoom: 19, attribution: 'Imagery © Esri, Maxar, Earthstar Geographics' })
       map.addLayer({ id: 'sat', type: 'raster', source: 'sat', layout: { visibility: 'none' } }, firstSymbol)
 
@@ -144,7 +155,10 @@ export default function MapView(p: Props) {
         if (props.current.mode === 'view') map.getCanvas().style.cursor = 'pointer'
       })
       map.on('mouseleave', 'edges-hit', () => (map.getCanvas().style.cursor = ''))
-      map.on('idle', () => hideBuildingsOnPlot())
+      map.on('idle', () => {
+        hideBuildingsOnPlot()
+        syncContextShadows()
+      })
 
       const draw = new TerraDraw({
         adapter: new TerraDrawMapLibreGLAdapter({ map }),
@@ -288,16 +302,111 @@ export default function MapView(p: Props) {
     layer.setContent(groups)
   }
 
+  function shadowFC(mp: MultiPoly, frame: LocalFrame): GeoJSON.FeatureCollection {
+    return mp.length
+      ? { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'MultiPolygon', coordinates: mpToGeo(mp, frame) }, properties: {} }] }
+      : { type: 'FeatureCollection', features: [] }
+  }
+
+  /** Shadow of the selected concept, floor by floor (so a tower on a podium casts the right shape). */
+  function syncConceptShadow() {
+    const map = mapRef.current
+    if (!map || !readyRef.current) return
+    const { analysis, frame, conceptId, showConcept, sun } = props.current
+    const v = sun ? shadowVector(sun) : null
+    const concept = analysis?.concepts.find((c) => c.id === conceptId)
+    let mp: MultiPoly = []
+    if (v && concept && showConcept) {
+      const parts: MultiPoly[] = []
+      for (const b of concept.blocks) for (const f of b.floors) parts.push(prismShadow(f.plate, f.z0, f.z1, v))
+      mp = union(...parts)
+    }
+    ;(map.getSource('shadow-concept') as maplibregl.GeoJSONSource).setData(shadowFC(mp, frame))
+    layerRef.current?.setSun(sun)
+  }
+
+  /** Shadows of the real surrounding buildings, from their OSM heights, within ~400 m of the plot. */
+  const ctxKey = useRef('')
+  function syncContextShadows() {
+    const map = mapRef.current
+    if (!map || !readyRef.current) return
+    const { frame, sun, showContext } = props.current
+    const v = sun && showContext ? shadowVector(sun) : null
+    const parts: MultiPoly[] = []
+    let sig = 0
+    if (v) {
+      const seen = new Set<string>()
+      for (const { id } of bldLayers.current) {
+        for (const f of map.queryRenderedFeatures({ layers: [id] })) {
+          if (f.id !== undefined && hidden.current.ids.has(f.id)) continue
+          const h = Number(f.properties?.render_height ?? f.properties?.height ?? 0)
+          const h0 = Number(f.properties?.render_min_height ?? f.properties?.min_height ?? 0)
+          if (!(h > h0)) continue
+          const g = f.geometry
+          const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : []
+          for (const poly of polys) {
+            const outer = (poly[0] as [number, number][]).slice(0, -1)
+            if (outer.length < 3) continue
+            const local = outer.map((q) => frame.toLocal(q))
+            const c: Pt = [local.reduce((s, q) => s + q[0], 0) / local.length, local.reduce((s, q) => s + q[1], 0) / local.length]
+            if (Math.hypot(c[0], c[1]) > 400) continue
+            const key = `${c[0].toFixed(1)},${c[1].toFixed(1)},${h}`
+            if (seen.has(key)) continue
+            seen.add(key)
+            sig += c[0] * 0.37 + c[1] * 0.61 + h
+            parts.push(prismShadow([[ensureCCW(local)]], h0, h, v))
+          }
+        }
+      }
+    }
+    const key = `${frame.origin.join(',')}|${v ? v.map((x) => x.toFixed(4)).join(',') : 'off'}|${parts.length}|${sig.toFixed(2)}`
+    if (key === ctxKey.current) return
+    ctxKey.current = key
+    ;(map.getSource('shadow-context') as maplibregl.GeoJSONSource).setData(shadowFC(union(...parts), frame))
+  }
+
   function syncAll() {
     syncGeo()
     syncMassing()
     hideBuildingsOnPlot()
+    syncConceptShadow()
+    syncContextShadows()
   }
 
   useEffect(() => {
     syncAll()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.plot, p.roads, p.frame, p.analysis, p.conceptId, p.envelopeMode, p.showConcept])
+
+  useEffect(() => {
+    syncConceptShadow()
+    syncContextShadows()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.sun, p.showContext])
+
+  // Surrounding buildings on/off (the plot's own context is always hidden).
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !readyRef.current) return
+    for (const { id } of bldLayers.current) map.setLayoutProperty(id, 'visibility', p.showContext ? 'visible' : 'none')
+  }, [p.showContext])
+
+  // Bird's-eye (straight down, north up) or the 3D street view, framed on the plot.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !readyRef.current) return
+    const pts = props.current.plot
+    const b = new maplibregl.LngLatBounds(pts[0], pts[0])
+    for (const q of pts) b.extend(q)
+    const c = b.getCenter()
+    if (p.view === 'top') {
+      const cam = map.cameraForBounds(b, { padding: 120, bearing: 0, pitch: 0 })
+      map.easeTo({ center: c, zoom: Math.min(17.8, (cam?.zoom ?? 17.5) - 1.4), pitch: 0, bearing: 0, duration: 900 })
+    } else {
+      map.easeTo({ center: c, zoom: window.innerWidth < 860 ? 16.2 : 17, pitch: 58, bearing: -28, duration: 900 })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.view])
 
   useEffect(() => {
     const map = mapRef.current
