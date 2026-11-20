@@ -7,6 +7,7 @@ import {
   type Concept,
   type Road,
   type SystemSpec,
+  type Design,
   HIGH_RISE_M,
   TYPES,
   fmt,
@@ -15,6 +16,7 @@ import {
 import { FAR_TABLE } from '../rules/zones'
 import type { CustomBuilding } from '../rules/systems'
 import BuildingSystem from './BuildingSystem'
+import DesignEditor from './DesignEditor'
 import type { Mode } from '../map/MapView'
 
 interface Props {
@@ -41,6 +43,8 @@ interface Props {
   setSystemId: (id: string) => void
   customs: CustomBuilding[]
   setCustoms: (c: CustomBuilding[]) => void
+  design: Design
+  setDesign: (d: Design) => void
 }
 
 const rai = (m2: number) => {
@@ -263,6 +267,7 @@ export default function Panel(p: Props) {
                 <ConceptCard key={c.id} c={c} plotArea={p.plotArea} active={c.id === p.conceptId} onClick={() => p.setConceptId(c.id)} type={p.type} />
               ))}
             </div>
+            {p.conceptId === 'design' && <DesignEditor design={p.design} setDesign={p.setDesign} floorH={p.system.typH} />}
             {a.concepts
               .filter((c) => c.id === p.conceptId)
               .map((c) => (

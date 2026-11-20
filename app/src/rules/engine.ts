@@ -9,7 +9,9 @@ import {
   type Pt,
   type Ring,
   capsule,
+  centroid,
   clipHalfPlane,
+  ensureCCW,
   distToSegment,
   dist,
   insetByEdges,
@@ -40,6 +42,69 @@ export interface Inputs {
   nearStation: boolean
   bonusPct: number // FAR bonus claimed, 0..20 (cl. 51-57)
   system?: SystemSpec // structural system / custom building; defaults to cast-in-place concrete
+  design?: Design // the user's own massing, shown as a third concept
+}
+
+export type DesignShape = 'rect' | 'circle' | 'ellipse' | 'L' | 'hexagon' | 'octagon' | 'triangle' | 'custom'
+
+/** A massing the user shapes: a tower of any of the shapes above, optionally on a podium. */
+export interface Design {
+  shape: DesignShape
+  width: number // m (diameter for circle)
+  depth: number // m
+  rotation: number // degrees, 0 = long side along the road
+  offsetX: number // m along the road from the centre of the buildable area
+  offsetY: number // m away from the road
+  towerFloors: number
+  podiumFloors: number // 0 = no podium
+  podiumFill: boolean // podium fills the buildable area (else it follows the tower shape)
+  taper: number // % the top floor shrinks vs the bottom, 0-60
+  twist: number // degrees the top floor turns vs the bottom
+  trim: boolean // cut each floor back to the legal envelope
+  outline?: Pt[] // shape 'custom': outline in unit box (-0.5..0.5), y up, from a picture
+}
+
+export const DEFAULT_DESIGN: Design = {
+  shape: 'circle',
+  width: 26,
+  depth: 26,
+  rotation: 0,
+  offsetX: 0,
+  offsetY: 0,
+  towerFloors: 16,
+  podiumFloors: 3,
+  podiumFill: true,
+  taper: 0,
+  twist: 0,
+  trim: false,
+}
+
+/** Outline of a shape centred on the origin, w along x and d along y. Counter-clockwise. */
+export function shapeRing(shape: DesignShape, w: number, d: number, outline?: Pt[]): Ring {
+  if (shape === 'custom' && outline && outline.length >= 3) return ensureCCW(outline.map(([x, y]) => [x * w, y * d] as Pt))
+  const reg = (n: number, a0: number, rx: number, ry: number): Ring =>
+    Array.from({ length: n }, (_, i) => {
+      const a = a0 + (2 * Math.PI * i) / n
+      return [rx * Math.cos(a), ry * Math.sin(a)] as Pt
+    })
+  switch (shape) {
+    case 'circle':
+      return reg(64, 0, w / 2, w / 2)
+    case 'ellipse':
+      return reg(64, 0, w / 2, d / 2)
+    case 'hexagon':
+      return reg(6, 0, w / 2, d / 2)
+    case 'octagon':
+      return reg(8, Math.PI / 8, w / 2 / Math.cos(Math.PI / 8), d / 2 / Math.cos(Math.PI / 8))
+    case 'triangle':
+      return [[-w / 2, -d / 3], [w / 2, -d / 3], [0, (2 * d) / 3]]
+    case 'L': {
+      const t = Math.min(w, d) * 0.5
+      return [[-w / 2, -d / 2], [w / 2, -d / 2], [w / 2, -d / 2 + t], [-w / 2 + t, -d / 2 + t], [-w / 2 + t, d / 2], [-w / 2, d / 2]]
+    }
+    default:
+      return [[-w / 2, -d / 2], [w / 2, -d / 2], [w / 2, d / 2], [-w / 2, d / 2]]
+  }
 }
 
 /** How the building is built: storey heights, plate size, grid and efficiency. The use (condo,
@@ -925,6 +990,99 @@ export function validatePlot(plot: Ring): string | null {
   return null
 }
 
+const SHAPE_NAMES: Record<DesignShape, string> = {
+  rect: 'rectangular',
+  circle: 'round',
+  ellipse: 'elliptical',
+  L: 'L-shaped',
+  hexagon: 'hexagonal',
+  octagon: 'octagonal',
+  triangle: 'triangular',
+  custom: 'traced',
+}
+
+/** Concept C: the user's own massing. Built exactly as drawn (or trimmed to the envelope), then
+ *  run through the same independent checklist as the generated concepts. */
+export function designConcept(inp: Inputs, L: Limits, d: Design, env: { low: Envelope; high: Envelope }): Concept {
+  const spec = specFor(inp)
+  const plane = L.plane!
+  const clampN = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : lo))
+  const w = clampN(d.width, 4, 200)
+  const dep = d.shape === 'circle' ? w : clampN(d.depth, 4, 200)
+  const towerN = Math.round(clampN(d.towerFloors, 0, 120))
+  const podN = Math.round(clampN(d.podiumFloors, 0, 10))
+  const taper = clampN(d.taper, 0, 60) / 100
+  const twist = (clampN(d.twist, -180, 180) * Math.PI) / 180
+
+  // Storey heights: low-rise heights if the whole building then stays under 23 m.
+  const totalN = towerN + podN
+  const lowFits = totalN > 0 && spec.lowGroundH + (totalN - 1) * spec.lowTypH < HIGH_RISE_M
+  const gH = lowFits ? spec.lowGroundH : spec.groundH
+  const tH = lowFits ? spec.lowTypH : spec.typH
+  const podH = lowFits ? spec.lowTypH : 3.0
+  const tops: number[] = []
+  for (let k = 0; k < totalN; k++) tops.push(k === 0 ? gH : tops[k - 1] + (k < podN ? podH : tH))
+  const height = tops.length ? tops[tops.length - 1] : 0
+
+  // Frame: x along the road, y away from it, centred on the buildable area.
+  const theta = Math.atan2(plane.b[1] - plane.a[1], plane.b[0] - plane.a[0])
+  const buildable = env.high.bands[0].region.length ? env.high.bands[0].region : env.low.bands[0].region
+  const anchor: Pt = buildable.length ? centroid(buildable.reduce((best, p) => (polyArea(p) > polyArea(best) ? p : best))[0]) : centroid(inp.plot)
+  const toWorld = (p: Pt): Pt => {
+    const q = rot([p[0] + clampN(d.offsetX, -200, 200), p[1] + clampN(d.offsetY, -200, 200)], theta)
+    return [anchor[0] + q[0], anchor[1] + q[1]]
+  }
+  const base = shapeRing(d.shape, w, dep, d.outline)
+  const towerPlate = (k: number): MultiPoly => {
+    const f = towerN > 1 ? k / (towerN - 1) : 0
+    const sc = 1 - taper * f
+    const a = (clampN(d.rotation, -360, 360) * Math.PI) / 180 + twist * f
+    return [[base.map((p) => toWorld(rot([p[0] * sc, p[1] * sc], a)))]]
+  }
+
+  const build = (cls: BuildingClass): Floor[] => {
+    const e = cls === 'low' ? env.low : env.high
+    const out: Floor[] = []
+    for (let k = 0; k < totalN; k++) {
+      const z0 = k === 0 ? 0 : tops[k - 1]
+      const z1 = tops[k]
+      let plate: MultiPoly
+      if (k < podN && d.podiumFill) plate = (cls === 'low' ? env.low : env.high).bands[0].region
+      else plate = towerPlate(Math.max(0, k - podN))
+      if (d.trim) {
+        const band = e.bands.find((b) => z1 <= b.z1 + 1e-6) ?? e.bands[e.bands.length - 1]
+        plate = clipToPlane(intersection(plate, band.region), plane, z1)
+      }
+      const area = mpArea(plate)
+      if (area < 1) {
+        if (d.trim) break
+        continue
+      }
+      out.push({ z0, z1, plate, area, use: k === 0 ? 'lobby' : k < podN ? 'parking' : useFor(inp.type) })
+    }
+    if (out.length === 1) out[0].use = useFor(inp.type)
+    return out
+  }
+  let cls: BuildingClass = height >= HIGH_RISE_M ? 'high' : 'low'
+  let floors = build(cls)
+  if (cls === 'low' && floors.reduce((s, f) => s + f.area, 0) >= EXTRA_LARGE_M2) {
+    cls = 'high'
+    floors = build(cls)
+  }
+  const podTxt = podN ? ` on a ${podN}-floor ${d.podiumFill ? 'podium' : 'base'}` : ''
+  const extras = [taper ? `tapering ${Math.round(taper * 100)}%` : '', twist ? `twisting ${Math.round(clampN(d.twist, -180, 180))}°` : '', d.trim ? 'trimmed to the envelope' : ''].filter(Boolean)
+  const c = assemble(inp, L, {
+    id: 'design',
+    name: `Your design: ${towerN}-storey ${SHAPE_NAMES[d.shape]} tower`,
+    tagline: `${d.shape === 'circle' ? `${fmt(w)} m across` : `${fmt(w)} × ${fmt(dep)} m`}${podTxt}${extras.length ? ', ' + extras.join(', ') : ''}. Checked against the same rules as the other concepts.`,
+    cls,
+    blocks: [{ name: 'Your design', floors }],
+    surfaceParking: cls === 'low',
+  })
+  if (!floors.length) c.infeasible = d.trim ? 'Nothing is left after trimming to the envelope. Move or shrink the shape.' : 'The design has no floors.'
+  return c
+}
+
 export interface Analysis {
   limits: Limits
   low: Envelope | null
@@ -940,6 +1098,7 @@ export function analyse(inp: Inputs): Analysis {
   const low = buildEnvelope(inp, 'low', L.plane)
   const high = buildEnvelope(inp, 'high', L.plane)
   const concepts = [lowRiseConcept(inp, L), towerConcept(inp, L)]
+  if (inp.design) concepts.push(designConcept(inp, L, inp.design, { low, high }))
   return { limits: L, low, high, concepts, error: null }
 }
 

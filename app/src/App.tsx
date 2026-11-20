@@ -15,7 +15,7 @@ function loadCustoms(): CustomBuilding[] {
 }
 import { LocalFrame } from './geo/frame'
 import { ensureCCW, signedArea } from './geo/geom'
-import { analyse, type BuildingType, type Road } from './rules/engine'
+import { DEFAULT_DESIGN, analyse, type BuildingType, type Design, type Road } from './rules/engine'
 import { detectRoads } from './map/roads'
 import Panel from './ui/Panel'
 import './App.css'
@@ -77,6 +77,7 @@ export default function App() {
   const [basemap, setBasemap] = useState<Basemap>('map')
   const mapRef = useRef<maplibregl.Map | null>(null)
   const [view, setView] = useState<View>('3d')
+  const [design, setDesign] = useState<Design>(DEFAULT_DESIGN)
   const [showContext, setShowContext] = useState(true)
   const [shadowsOn, setShadowsOn] = useState(true)
   const [month, setMonth] = useState(11) // 21 December: longest shadows of the year
@@ -84,8 +85,8 @@ export default function App() {
 
   const frame = useMemo(() => new LocalFrame(centroidLL(plot)), [plot])
   const inputs = useMemo(
-    () => ({ plot: ensureCCW(frame.ringToLocal(plot)), roads, zone: 'ย.8' as const, type, nearStation, bonusPct, system }),
-    [frame, plot, roads, type, nearStation, bonusPct, system],
+    () => ({ plot: ensureCCW(frame.ringToLocal(plot)), roads, zone: 'ย.8' as const, type, nearStation, bonusPct, system, design }),
+    [frame, plot, roads, type, nearStation, bonusPct, system, design],
   )
   const bundle = useMemo(() => ({ inputs, frame }), [inputs, frame])
   const deferred = useDeferredValue(bundle)
@@ -174,6 +175,8 @@ export default function App() {
         setSystemId={setSystemId}
         customs={customs}
         setCustoms={setCustoms}
+        design={design}
+        setDesign={setDesign}
       />
       <div className="stage">
         <MapView
