@@ -8,6 +8,7 @@ import {
   type MultiPoly,
   type Pt,
   type Ring,
+  capsule,
   clipHalfPlane,
   distToSegment,
   dist,
@@ -297,6 +298,12 @@ export function limits(inp: Inputs): Limits {
       gfaCapReason = `ย.8 cl.15(8): hotels limited to ${zone.hotel.freeRooms} rooms unless on a ≥${zone.hotel.minRoad} m road or within 500 m of a station`
     }
   }
+  // MR33 cl.2: a building over 30,000 m² needs a side of at least 12 m on a road at least 18 m wide.
+  const on18 = inp.roads.some((r, i) => r && r.width >= 18 && dist(inp.plot[i], inp.plot[(i + 1) % inp.plot.length]) >= 12)
+  if (!on18 && gfaCap > 30000) {
+    gfaCap = 30000
+    gfaCapReason = 'MR33 cl.2: over 30,000 m² needs 12 m of frontage on a road at least 18 m wide'
+  }
   if (!plane) useBlocked = 'Mark at least one plot edge as facing a public road.'
   return { plotArea, farCap, gfaCap, gfaCapReason, zone, plane, useBlocked }
 }
@@ -333,8 +340,16 @@ export function lowRiseConcept(inp: Inputs, L: Limits): Concept {
   const base = insetByEdges(inp.plot, s)
   const tops = Array.from({ length: n }, (_, k) => spec.lowGroundH + k * spec.lowTypH)
 
-  const build = (t: number, floors = n) => {
-    const fp = insetMP(base, t)
+  // Two ways to shrink the footprint to the floor-area cap: a uniform inset (keeps the
+  // building centred, best on small plots) or a band along the road (keeps the building
+  // near the road for fire access, best on large plots). Both are tried; the better wins.
+  const roadEdges = inp.roads.map((r, i) => (r ? i : -1)).filter((i) => i >= 0)
+  const band = (R: number): MultiPoly =>
+    intersection(base, union(...roadEdges.map((i) => [[capsule(inp.plot[i], inp.plot[(i + 1) % inp.plot.length], R, 16)]] as MultiPoly)))
+  const MAX_BAND = 120
+  const footprint = (mode: 'inset' | 'band', t: number): MultiPoly => (mode === 'inset' ? insetMP(base, t) : band(MAX_BAND - t))
+  const build = (mode: 'inset' | 'band', t: number, floors = n) => {
+    const fp = footprint(mode, t)
     const plates: MultiPoly[] = []
     for (let k = 0; k < floors; k++) plates.push(clipToPlane(fp, plane, tops[k]))
     return plates
@@ -347,49 +362,58 @@ export function lowRiseConcept(inp: Inputs, L: Limits): Concept {
     return { areas, gfa, cover, maxPlate }
   }
   const capGfa = Math.min(L.gfaCap, EXTRA_LARGE_M2 - 1)
-  const feasible = (t: number, floors: number) => {
-    const e = evalPlates(build(t, floors))
+  const feasible = (mode: 'inset' | 'band', t: number, floors: number) => {
+    const e = evalPlates(build(mode, t, floors))
     if (e.gfa <= 0) return true
     const os = openSpaceRequired(inp, L, e.gfa, e.maxPlate, false)
     return e.gfa <= capGfa && L.plotArea - e.cover >= os.req
   }
-  // Try full height first; fewer floors only if no inset works.
-  let floors = n
-  let t: number | null = null
-  const maxInset = 60
-  while (floors >= 1) {
-    t = bisect(0, maxInset, (x) => feasible(x, floors))
-    if (t !== null && evalPlates(build(t, floors)).gfa > 50) break
-    floors--
-  }
-  const plates = t === null ? [] : build(t, floors)
-  const floorsArr: Floor[] = plates.map((plate, k) => ({
-    z0: k === 0 ? 0 : tops[k - 1],
-    z1: tops[k],
-    plate,
-    area: mpArea(plate),
-    use: k === 0 && inp.type !== 'condo' ? 'lobby' : useFor(inp.type),
-  }))
-  // Parking: ground floor is lobby + parking; convert floors above to parking until demand is met.
-  if (floorsArr.length) {
-    floorsArr[0].use = 'lobby'
-    for (let k = 1; k < floorsArr.length - 1; k++) {
-      const trial = assemble(inp, L, { id: 'x', name: '', tagline: '', cls: 'low', blocks: [{ name: '', floors: floorsArr }], surfaceParking: true, skipChecks: true })
-      if (trial.parkingProvided >= trial.parkingRequired) break
-      floorsArr[k].use = 'parking'
-      floorsArr[k].z1 = floorsArr[k].z1 // same storey height
+  const make = (mode: 'inset' | 'band'): Concept => {
+    // Try full height first; fewer floors only if no footprint works.
+    let floors = n
+    let t: number | null = null
+    const hi = mode === 'inset' ? 60 : MAX_BAND
+    while (floors >= 1) {
+      t = bisect(0, hi, (x) => feasible(mode, x, floors))
+      if (t !== null && evalPlates(build(mode, t, floors)).gfa > 50) break
+      floors--
     }
+    const plates = t === null ? [] : build(mode, t, floors)
+    const floorsArr: Floor[] = plates.map((plate, k) => ({
+      z0: k === 0 ? 0 : tops[k - 1],
+      z1: tops[k],
+      plate,
+      area: mpArea(plate),
+      use: useFor(inp.type),
+    }))
+    // Parking: ground floor is lobby + parking; convert floors above to parking until demand is met.
+    if (floorsArr.length) {
+      floorsArr[0].use = 'lobby'
+      for (let k = 1; k < floorsArr.length - 1; k++) {
+        const trial = assemble(inp, L, { id: 'x', name: '', tagline: '', cls: 'low', blocks: [{ name: '', floors: floorsArr }], surfaceParking: true, skipChecks: true })
+        if (trial.parkingProvided >= trial.parkingRequired) break
+        floorsArr[k].use = 'parking'
+      }
+    }
+    const c = assemble(inp, L, {
+      id: 'low',
+      name: `${floorsArr.length}-storey low-rise`,
+      tagline:
+        mode === 'inset'
+          ? 'Stays under 23 m and 10,000 m², so MR33 high-rise rules do not apply. Footprint follows the plot.'
+          : 'Stays under 23 m and 10,000 m², so MR33 high-rise rules do not apply. Kept along the road for fire-truck access.',
+      cls: 'low',
+      blocks: [{ name: 'Low-rise block', floors: floorsArr }],
+      surfaceParking: true,
+    })
+    if (!floorsArr.length) c.infeasible = 'No floor plate fits inside the low-rise setbacks.'
+    return c
   }
-  const c = assemble(inp, L, {
-    id: 'low',
-    name: `${floorsArr.length}-storey low-rise`,
-    tagline: 'Stays under 23 m and 10,000 m², so MR33 high-rise rules do not apply. Footprint follows the plot.',
-    cls: 'low',
-    blocks: [{ name: 'Low-rise block', floors: floorsArr }],
-    surfaceParking: true,
-  })
-  if (!floorsArr.length) c.infeasible = 'No floor plate fits inside the low-rise setbacks.'
-  return c
+  const fails = (c: Concept) => (c.infeasible ? 99 : c.checks.filter((k) => k.pass === false).length)
+  const a = make('inset')
+  if (fails(a) === 0 || !roadEdges.length) return a
+  const b = make('band')
+  return fails(b) < fails(a) || (fails(b) === fails(a) && b.gfa > a.gfa) ? b : a
 }
 
 /** Concept B: tower on a parking podium, tower slab placed far from the road to climb the sky plane. */

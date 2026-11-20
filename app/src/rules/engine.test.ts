@@ -30,4 +30,13 @@ describe('rules', () => {
       }
     })
   }
+  it('large plot on a 12 m road: both concepts pass (road band + 30,000 m² cap)', () => {
+    const a = run(rect(150, 120), 0, 12)
+    expect(a.limits.gfaCap).toBe(30000)
+    for (const c of a.concepts) {
+      const fails = c.checks.filter((k) => k.pass === false).map((f) => `${c.name} ${f.id}: ${f.actual}`)
+      expect(fails).toEqual([])
+      expect(c.gfa).toBeLessThanOrEqual(a.limits.gfaCap + 0.5)
+    }
+  })
 })

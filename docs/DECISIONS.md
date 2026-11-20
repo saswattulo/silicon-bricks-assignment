@@ -74,7 +74,8 @@ Note an easy trap: **Bangkok OSR is open space as a percentage of total floor ar
 6. **Public-open-space bonus (cl. 53)** applies to "public buildings" under the building control act; a pure condo arguably isn't one. The tool offers the rainwater and green-building bonuses (cl. 55-56) for all types and flags cl. 53 as hotel/office only.
 7. **Low-rise uses one side setback for all floors.** R4 allows 2 m up to 9 m and 3 m above. The low-rise envelope shows both steps, but the low-rise concept uses 3 m on every floor so the floor plates stack straight. This loses a little floor area and keeps the design buildable.
 8. **Unit and room counts are estimates**: net saleable area = floor area × efficiency (condo 72%, hotel 62%, office 75%), divided by an average unit (condo 35 m², hotel room 32 m²). These drive the parking and EIA lines only.
-9. **Zone lookup.** The BMA's zoning GIS (cityplangis / 3d-cpd ArcGIS) could not be reached from our build environment, so the zone is a user input defaulting to ย.8, with a link to the BMA map to confirm. The tool does not claim to know a plot's zone.
+9. **Large plots.** On a 12 m road, a building over 30,000 m² is not allowed (MR33 cl. 2 needs an 18 m road), so the tool caps floor area at 30,000 m² there. The low-rise concept tries two footprints, a uniform inset and a band along the road, and keeps the one that passes more checks. On big plots the band wins because a centred block would be more than 20 m from the road and fail the fire-truck rule.
+10. **Zone lookup.** The BMA's zoning GIS (cityplangis / 3d-cpd ArcGIS) could not be reached from our build environment, so the zone is a user input defaulting to ย.8, with a link to the BMA map to confirm. The tool does not claim to know a plot's zone.
 
 ## 5. Sources
 
