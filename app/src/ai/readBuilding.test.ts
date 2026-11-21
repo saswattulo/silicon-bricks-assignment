@@ -6,6 +6,7 @@ const base: Reading = {
   tower_floors: 22, podium_floors: 4, podium_wider: true, taper_pct: 10, twist_deg: 13,
   wall_colour: '#F0F0EB', glass_colour: 'blue-ish #5a7d9a', frame_colour: 'grey', glazing_pct: 120,
   podium_glazed: true, balconies: true, roof_steps: 2, roof_step_m: 2.5,
+  tiers: [], roof: 'flat', window_pattern: 'ribbon',
   confidence: 'medium', notes: ['Round glass tower on a wide base.'],
 }
 const fake = (content: string | null, status = 200, refusal: string | null = null) => {
@@ -45,7 +46,17 @@ describe('AI picture reading', () => {
     expect(d).toMatchObject({ shape: 'circle', width: 6, depth: 6, towerFloors: 80, podiumFloors: 4, podiumFill: true, taper: 60, twist: 15 })
   })
   it('reads the look into a facade, with safe colours', () => {
-    expect(toDraft(base).facade).toEqual({ wall: '#f0f0eb', glass: '#5a7d9a', frame: '#8a8279', glazing: 90, podiumGlass: true, balconies: true, roofSteps: 2, roofStepM: 2.5 })
+    expect(toDraft(base).facade).toEqual({ wall: '#f0f0eb', glass: '#5a7d9a', frame: '#8a8279', glazing: 90, podiumGlass: true, balconies: true, roofSteps: 2, roofStepM: 2.5, roof: 'flat', pattern: 'ribbon' })
+  })
+  it('keeps stepped tiers and scales them with the width hint', () => {
+    const d = toDraft({ ...base, shape: 'rect', width_m: 20, tiers: [
+      { floors: 10, shape: 'rect', width_m: 20, depth_m: 16, shift_x_m: 0, shift_y_m: 0 },
+      { floors: 5, shape: 'rect', width_m: 12, depth_m: 10, shift_x_m: 2, shift_y_m: 3 },
+    ] }, 40)
+    expect(d.tiers).toHaveLength(2)
+    expect(d.tiers![1]).toMatchObject({ floors: 5, width: 24, depth: 20, dx: 4, dy: 6 })
+    expect(d.towerFloors).toBe(15)
+    expect(toDraft(base).tiers).toBeUndefined()
   })
   it('rescales to the width the user gives', () => {
     expect(toDraft({ ...base, shape: 'rect', width_m: 20, depth_m: 10 }, 40)).toMatchObject({ width: 40, depth: 20 })

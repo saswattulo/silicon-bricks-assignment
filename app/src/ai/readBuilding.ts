@@ -33,6 +33,20 @@ export const Reading = z.object({
   balconies: z.boolean().describe('true if the upper floors have balconies or loggias'),
   roof_steps: z.number().describe('how many top floors step back to form terraces, 0 to 4'),
   roof_step_m: z.number().describe('how far each of those steps goes back, in metres'),
+  tiers: z
+    .array(
+      z.object({
+        floors: z.number().describe('storeys in this tier'),
+        shape: z.enum(['rect', 'circle', 'ellipse', 'L', 'hexagon', 'octagon', 'triangle']),
+        width_m: z.number(),
+        depth_m: z.number(),
+        shift_x_m: z.number().describe('sideways offset of this tier centre from the main tower centre, metres, + = right'),
+        shift_y_m: z.number().describe('front-back offset of this tier centre, metres, + = further back from the street'),
+      }),
+    )
+    .describe('the tower above the podium as distinct stacked parts, bottom to top, when its size or position changes with height (setbacks, a narrower crown, a wing that stops lower). One entry if it is one straight block.'),
+  roof: z.enum(['flat', 'gable', 'hip']).describe('roof form: flat (with parapet), gable (two slopes) or hip (four slopes)'),
+  window_pattern: z.enum(['ribbon', 'punched', 'curtain']).describe('ribbon = continuous horizontal window bands; punched = separate windows in solid wall; curtain = all-glass facade'),
   confidence: z.enum(['low', 'medium', 'high']),
   notes: z.array(z.string()).describe('2 to 4 short sentences for the user: what you saw and what you had to guess'),
 })
@@ -44,7 +58,11 @@ storeys, a podium if any, taper and twist. Use cues such as window rows, doors (
 people and typical Bangkok storey heights (3-3.5 m homes and condos, 4 m offices) to estimate scale.
 If the footprint is not visible (a straight-on photo), infer the most likely plan shape and a depth
 from the visible side and say so in the notes. Also read the look: wall, glass and frame colours,
-how much of each storey is window, a glass podium, balconies, and top floors that step back. Notes are plain sentences for a non-expert.`
+how much of each storey is window, a glass podium, balconies, and top floors that step back.
+Describe the real form, not just a box: if the building gets narrower or moves back higher up,
+or has wings of different heights, list those parts as tiers from bottom to top with their own
+size and offset, so the tiers' floors add up to tower_floors. Also give the roof form and the
+window pattern. Notes are plain sentences for a non-expert.`
 
 export interface ReadRequest {
   image: string // base64, no data: prefix
@@ -83,6 +101,7 @@ export function toDraft(r: Reading, widthHint?: number): Partial<Design> {
     taper: Math.round(clamp(r.taper_pct, 0, 60)),
     twist: Math.round(clamp(r.twist_deg, -120, 120) / 5) * 5,
     outline: undefined,
+    ...tiersFrom(r, w > 0 && r.width_m > 0 ? w / r.width_m : 1),
     facade: {
       wall: colour(r.wall_colour, DEFAULT_FACADE.wall),
       glass: colour(r.glass_colour, DEFAULT_FACADE.glass),
@@ -92,8 +111,28 @@ export function toDraft(r: Reading, widthHint?: number): Partial<Design> {
       balconies: r.balconies,
       roofSteps: Math.round(clamp(r.roof_steps, 0, 4)),
       roofStepM: half(clamp(r.roof_step_m, 1, 6)),
+      roof: r.roof ?? 'flat',
+      pattern: r.window_pattern ?? 'ribbon',
     },
   }
+}
+
+/** Stacked tiers when the reading found more than one; floors are made to add up to the tower. */
+function tiersFrom(r: Reading, k: number): Partial<Design> {
+  const ts = (r.tiers ?? []).filter((t) => t && t.floors >= 1).slice(0, 6)
+  if (ts.length < 2) return { tiers: undefined }
+  const tiers = ts.map((t) => {
+    const width = half(clamp(t.width_m * k, 4, 100))
+    return {
+      floors: Math.round(clamp(t.floors, 1, 80)),
+      shape: t.shape,
+      width,
+      depth: t.shape === 'circle' ? width : half(clamp(t.depth_m * k, 4, 100)),
+      dx: half(clamp(t.shift_x_m * k, -40, 40)),
+      dy: half(clamp(t.shift_y_m * k, -40, 40)),
+    }
+  })
+  return { tiers, towerFloors: Math.min(80, tiers.reduce((s, t) => s + t.floors, 0)) }
 }
 
 const colour = (s: string, fb: string) => {
@@ -119,7 +158,7 @@ export function validate(body: unknown): ReadRequest {
 }
 
 // Parse leniently: the massing fields must be there; look fields fall back to defaults.
-const Lenient = Reading.partial({ wall_colour: true, glass_colour: true, frame_colour: true, glazing_pct: true, podium_glazed: true, balconies: true, roof_steps: true, roof_step_m: true, notes: true })
+const Lenient = Reading.partial({ wall_colour: true, glass_colour: true, frame_colour: true, glazing_pct: true, podium_glazed: true, balconies: true, roof_steps: true, roof_step_m: true, notes: true, tiers: true, roof: true, window_pattern: true })
 function parseReading(text: string): Reading | null {
   try {
     const p = Lenient.safeParse(JSON.parse(text))
@@ -136,6 +175,9 @@ function parseReading(text: string): Reading | null {
       roof_steps: d.roof_steps ?? 0,
       roof_step_m: d.roof_step_m ?? 2,
       notes: d.notes ?? [],
+      tiers: d.tiers ?? [],
+      roof: d.roof ?? 'flat',
+      window_pattern: d.window_pattern ?? 'ribbon',
     }
   } catch {
     return null

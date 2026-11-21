@@ -63,6 +63,17 @@ export interface Design {
   trim: boolean // cut each floor back to the legal envelope
   outline?: Pt[] // shape 'custom': outline in unit box (-0.5..0.5), y up, from a picture
   facade?: Facade
+  tiers?: Tier[] // tower as stacked tiers, bottom to top; replaces the single tower shape when set
+}
+
+/** One part of a stepped tower: a run of identical floors, offset from the tower's centre. */
+export interface Tier {
+  floors: number
+  shape: Exclude<DesignShape, 'custom'>
+  width: number
+  depth: number
+  dx: number // m along the road from the tower centre
+  dy: number // m away from the road
 }
 
 /** How the building looks. Only roof steps change the floor plates; the rest is appearance. */
@@ -75,6 +86,8 @@ export interface Facade {
   balconies: boolean // recessed balconies on home and hotel floors
   roofSteps: number // top floors stepped back, 0-4
   roofStepM: number // m each step goes back
+  roof?: 'flat' | 'gable' | 'hip' // pitched roofs are drawn above the top slab (height is measured to the slab)
+  pattern?: 'ribbon' | 'punched' | 'curtain' // window bands, single windows, or a full glass wall
 }
 
 export const DEFAULT_FACADE: Facade = { wall: '#f2eee6', glass: '#86a9c2', frame: '#8a8279', glazing: 45, podiumGlass: true, balconies: true, roofSteps: 0, roofStepM: 2 }
@@ -1025,7 +1038,8 @@ export function designConcept(inp: Inputs, L: Limits, d: Design, env: { low: Env
   const clampN = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : lo))
   const w = clampN(d.width, 4, 200)
   const dep = d.shape === 'circle' ? w : clampN(d.depth, 4, 200)
-  const towerN = Math.round(clampN(d.towerFloors, 0, 120))
+  const tiers = (d.tiers ?? []).map((t) => ({ ...t, floors: Math.round(clampN(t.floors, 0, 120)) })).filter((t) => t.floors > 0)
+  const towerN = tiers.length ? Math.min(120, tiers.reduce((s2, t) => s2 + t.floors, 0)) : Math.round(clampN(d.towerFloors, 0, 120))
   const podN = Math.round(clampN(d.podiumFloors, 0, 10))
   const taper = clampN(d.taper, 0, 60) / 100
   const twist = (clampN(d.twist, -180, 180) * Math.PI) / 180
@@ -1053,7 +1067,14 @@ export function designConcept(inp: Inputs, L: Limits, d: Design, env: { low: Env
     const f = towerN > 1 ? k / (towerN - 1) : 0
     const sc = 1 - taper * f
     const a = (clampN(d.rotation, -360, 360) * Math.PI) / 180 + twist * f
-    const plate: MultiPoly = [[base.map((p) => toWorld(rot([p[0] * sc, p[1] * sc], a)))]]
+    let ring = base
+    if (tiers.length) {
+      let left = k
+      const t = tiers.find((x) => (left < x.floors ? true : ((left -= x.floors), false))) ?? tiers[tiers.length - 1]
+      const tw = clampN(t.width, 4, 200)
+      ring = shapeRing(t.shape, tw, t.shape === 'circle' ? tw : clampN(t.depth, 4, 200)).map((p) => [p[0] + clampN(t.dx, -100, 100), p[1] + clampN(t.dy, -100, 100)] as Pt)
+    }
+    const plate: MultiPoly = [[ring.map((p) => toWorld(rot([p[0] * sc, p[1] * sc], a)))]]
     // stepped roof: the top floors step back, one step per floor
     const steps = Math.round(clampN(d.facade?.roofSteps ?? 0, 0, 4))
     const fromTop = towerN - 1 - k
@@ -1097,8 +1118,8 @@ export function designConcept(inp: Inputs, L: Limits, d: Design, env: { low: Env
   const extras = [taper ? `tapering ${Math.round(taper * 100)}%` : '', twist ? `twisting ${Math.round(clampN(d.twist, -180, 180))}°` : '', d.trim ? 'trimmed to the envelope' : ''].filter(Boolean)
   const c = assemble(inp, L, {
     id: 'design',
-    name: `Your design: ${totalN}-storey ${SHAPE_NAMES[d.shape]} ${totalN <= 4 ? 'building' : 'tower'}`,
-    tagline: `${d.shape === 'circle' ? `${fmt(w)} m across` : `${fmt(w)} × ${fmt(dep)} m`}${podTxt}${extras.length ? ', ' + extras.join(', ') : ''}. Checked against the same rules as the other concepts.`,
+    name: `Your design: ${totalN}-storey ${tiers.length > 1 ? 'stepped' : SHAPE_NAMES[tiers[0]?.shape ?? d.shape]} ${totalN <= 4 ? 'building' : 'tower'}`,
+    tagline: `${tiers.length > 1 ? `${tiers.length} tiers (${tiers.map((t) => t.floors).join(' + ')} floors)` : d.shape === 'circle' ? `${fmt(w)} m across` : `${fmt(w)} × ${fmt(dep)} m`}${podTxt}${extras.length ? ', ' + extras.join(', ') : ''}. Checked against the same rules as the other concepts.`,
     cls,
     blocks: [{ name: 'Your design', floors }],
     surfaceParking: cls === 'low',

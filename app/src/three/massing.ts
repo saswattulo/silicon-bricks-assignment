@@ -120,6 +120,79 @@ function mullions(out: number[], mp: MultiPoly, z0: number, z1: number, step: nu
       }
 }
 
+/** Single windows: along each edge, a window `winW` wide in every bay of about `pitch` m, wall between. */
+function punched(glass: number[], wall: number[], mp: MultiPoly, z0: number, z1: number, pitch: number, winW: number) {
+  const quad = (out: number[], a: Pt, b: Pt) => {
+    out.push(a[0], a[1], z0, b[0], b[1], z0, b[0], b[1], z1)
+    out.push(a[0], a[1], z0, b[0], b[1], z1, a[0], a[1], z1)
+  }
+  for (const poly of mp)
+    for (const r of poly)
+      for (let i = 0; i < r.length; i++) {
+        const a = r[i]
+        const b = r[(i + 1) % r.length]
+        const L = Math.hypot(b[0] - a[0], b[1] - a[1])
+        const at = (d: number): Pt => [a[0] + ((b[0] - a[0]) * d) / L, a[1] + ((b[1] - a[1]) * d) / L]
+        const n = Math.floor(L / pitch)
+        if (n < 1 || L < winW + 0.6) {
+          quad(wall, a, b)
+          continue
+        }
+        let d = 0
+        for (let j = 0; j < n; j++) {
+          const mid = ((j + 0.5) * L) / n
+          const w0 = mid - winW / 2
+          const w1 = mid + winW / 2
+          quad(wall, at(d), at(w0))
+          quad(glass, at(w0), at(w1))
+          d = w1
+        }
+        quad(wall, at(d), b)
+      }
+}
+
+/** Pitched roof over the top plate, aligned with its longest edge. Gable: two slopes; hip: four. */
+function pitchedRoof(out: number[], plate: MultiPoly, z: number, kind: 'gable' | 'hip') {
+  const r = plate[0]?.[0]
+  if (!r || r.length < 3) return
+  let best = 0
+  let ang = 0
+  for (let i = 0; i < r.length; i++) {
+    const a = r[i]
+    const b = r[(i + 1) % r.length]
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1])
+    if (L > best) ((best = L), (ang = Math.atan2(b[1] - a[1], b[0] - a[0])))
+  }
+  const ux = Math.cos(ang)
+  const uy = Math.sin(ang)
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity
+  for (const p of r) {
+    const u = p[0] * ux + p[1] * uy
+    const v = -p[0] * uy + p[1] * ux
+    u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v)
+  }
+  // ridge along the longer side
+  const swap = v1 - v0 > u1 - u0
+  const [a0, a1, b0, b1] = swap ? [v0, v1, u0, u1] : [u0, u1, v0, v1]
+  const span = b1 - b0
+  const rise = Math.min(6, span * 0.32)
+  const bm = (b0 + b1) / 2
+  const inset = kind === 'hip' ? Math.min(span / 2, (a1 - a0) / 2) : 0
+  // a runs along the ridge, b across it; back to world x, y
+  const pt = (a: number, b: number, h: number) => {
+    const [u, v] = swap ? [b, a] : [a, b]
+    return [u * ux - v * uy, u * uy + v * ux, h]
+  }
+  const tri = (x: number[], y: number[], w: number[]) => out.push(...x, ...y, ...w)
+  const r0 = pt(a0 + inset, bm, z + rise)
+  const r1 = pt(a1 - inset, bm, z + rise)
+  const c00 = pt(a0, b0, z), c10 = pt(a1, b0, z), c11 = pt(a1, b1, z), c01 = pt(a0, b1, z)
+  tri(c00, c10, r1); tri(c00, r1, r0) // slope 1
+  tri(c11, c01, r0); tri(c11, r0, r1) // slope 2
+  tri(c01, c00, r0) // end 1 (gable wall or hip)
+  tri(c10, c11, r1) // end 2
+}
+
 function outlineAt(out: number[], mp: MultiPoly, z: number) {
   for (const poly of mp)
     for (const r of poly)
@@ -138,7 +211,7 @@ function outlineAt(out: number[], mp: MultiPoly, z: number) {
 export function conceptGroup(c: Concept): THREE.Group {
   const g = new THREE.Group()
   const fa = c.facade
-  const buf = { wall: [] as number[], parking: [] as number[], lobby: [] as number[], glass: [] as number[], dark: [] as number[], frame: [] as number[], roof: [] as number[], plant: [] as number[], rail: [] as number[], lines: [] as number[], mull: [] as number[] }
+  const buf = { wall: [] as number[], parking: [] as number[], lobby: [] as number[], glass: [] as number[], dark: [] as number[], frame: [] as number[], roof: [] as number[], plant: [] as number[], rail: [] as number[], lines: [] as number[], mull: [] as number[], tile: [] as number[] }
   const mainUse = c.blocks.flatMap((b) => b.floors).find((f) => f.use !== 'lobby' && f.use !== 'parking')?.use ?? 'residential'
   const glazingFor = (use: Floor['use']) => (fa ? fa.glazing / 100 : use === 'office' ? 0.7 : use === 'hotel' ? 0.5 : 0.45)
   const balconies = fa ? fa.balconies : true
@@ -176,17 +249,25 @@ export function conceptGroup(c: Concept): THREE.Group {
           band(buf.glass, inner, z0, zt)
           if (lineBudget > 0) mullions(buf.mull, inner, z0, zt, 3.2)
         } else band(buf.glass, f.plate, z0, zt)
+      } else if (fa?.pattern === 'curtain') {
+        band(buf.glass, f.plate, z0, zt)
+        if (lineBudget > 0) mullions(buf.mull, f.plate, z0, zt, 1.5)
       } else {
         const gl = glazingFor(f.use) * (zt - z0)
         const sill = (zt - z0 - gl) * 0.6
         band(buf.wall, f.plate, z0, z0 + sill)
-        band(buf.glass, f.plate, z0 + sill, z0 + sill + gl)
+        if (fa?.pattern === 'punched') punched(buf.glass, buf.wall, f.plate, z0 + sill, z0 + sill + gl, 3.2, 1.2 + 1.2 * (fa.glazing / 100))
+        else {
+          band(buf.glass, f.plate, z0 + sill, z0 + sill + gl)
+          if (lineBudget > 0) mullions(buf.mull, f.plate, z0 + sill, z0 + sill + gl, f.use === 'office' ? 1.5 : 1.8)
+        }
         band(buf.wall, f.plate, z0 + sill + gl, zt)
-        if (lineBudget > 0) mullions(buf.mull, f.plate, z0 + sill, z0 + sill + gl, f.use === 'office' ? 1.5 : 1.8)
       }
       lineBudget = 60000 - buf.mull.length / 6
       // roof: parapet on the part open to the sky, plant on the very top
-      if (!next || next.z0 > top + 0.01) {
+      if ((!next || next.z0 > top + 0.01) && fa?.roof && fa.roof !== 'flat') {
+        pitchedRoof(buf.tile, f.plate, top, fa.roof)
+      } else if (!next || next.z0 > top + 0.01) {
         band(buf.wall, f.plate, top, top + 1.0)
         outlineAt(buf.lines, f.plate, top + 1.0)
         const [x0, y0, x1, y1] = bbox(f.plate)
@@ -209,6 +290,7 @@ export function conceptGroup(c: Concept): THREE.Group {
   mesh(buf.dark, new THREE.MeshLambertMaterial({ color: 0x3d434b, side: THREE.DoubleSide }))
   mesh(buf.frame, new THREE.MeshLambertMaterial({ color: hex(fa?.frame, 0xd8d2c8), side: THREE.DoubleSide }))
   mesh(buf.roof, new THREE.MeshLambertMaterial({ color: 0xc9c4bb, side: THREE.DoubleSide }))
+  mesh(buf.tile, new THREE.MeshLambertMaterial({ color: 0x8f5a44, side: THREE.DoubleSide }))
   mesh(buf.plant, new THREE.MeshLambertMaterial({ color: 0xa9a49c, side: THREE.DoubleSide }))
   mesh(buf.glass, new THREE.MeshPhongMaterial({ color: hex(fa?.glass, mainUse === 'office' ? 0x6f97b8 : 0x86a9c2), specular: 0xbfd4e6, shininess: 70, side: THREE.DoubleSide }))
   mesh(buf.rail, new THREE.MeshBasicMaterial({ color: 0xcfe3ef, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false }))

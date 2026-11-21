@@ -336,7 +336,9 @@ export default function App() {
               Surroundings
             </button>
           </div>
-          <div className="legend">
+          <details className="legend" open={window.innerWidth > 1100}>
+            <summary>Legend</summary>
+            <div className="legitems">
             <span><i style={{ background: '#0e9f6e' }} />Low-rise envelope (&lt;23 m)</span>
             <span><i style={{ background: '#2563eb' }} />High-rise envelope (2:1 road plane)</span>
             <span><i style={{ background: '#f4efe6', border: '1px solid #8a7f72' }} />Homes / rooms / offices</span>
@@ -345,6 +347,7 @@ export default function App() {
             {shadowsOn && <span><i style={{ background: '#1e1b4b', opacity: 0.6 }} />Shadow of the design</span>}
             {shadowsOn && showContext && <span><i style={{ background: '#334155', opacity: 0.4 }} />Shadow of surroundings</span>}
           </div>
+          </details>
         </div>
         <div className="overlay bottom-left sunbox">
           <label className="sunhead">

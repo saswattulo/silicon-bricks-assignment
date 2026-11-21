@@ -42,3 +42,17 @@ describe('stepped roof', () => {
     expect(stepped.at(-3)!.area).toBeCloseTo(flat.at(-3)!.area, 3)
   })
 })
+
+describe('tiers', () => {
+  it('stacks tiers of different sizes and counts their floors', () => {
+    const c = run({ podiumFloors: 2, tiers: [
+      { floors: 6, shape: 'rect', width: 30, depth: 20, dx: 0, dy: 0 },
+      { floors: 4, shape: 'rect', width: 20, depth: 14, dx: 3, dy: 2 },
+    ] })
+    const fl = c.blocks[0].floors
+    expect(fl.length).toBe(12)
+    expect(fl[2].area).toBeCloseTo(600, 0)
+    expect(fl[11].area).toBeCloseTo(280, 0)
+    expect(c.name).toContain('stepped')
+  })
+})

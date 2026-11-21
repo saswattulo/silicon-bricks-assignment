@@ -1,5 +1,5 @@
 import { useEffect, useState, type DragEvent } from 'react'
-import { DEFAULT_FACADE, type Design, type DesignShape, type Facade } from '../rules/engine'
+import { DEFAULT_FACADE, type Design, type DesignShape, type Facade, type Tier } from '../rules/engine'
 import { readPlan, readSide, type Pixels, type Reading } from './imageToDesign'
 
 interface Props {
@@ -8,7 +8,7 @@ interface Props {
   floorH: number
 }
 
-const SHAPES: [DesignShape, string, string][] = [
+const SHAPES: [Exclude<DesignShape, 'custom'>, string, string][] = [
   ['rect', 'Box', 'M3 5h18v14H3z'],
   ['circle', 'Round', 'M12 3a9 9 0 1 0 0 18 9 9 0 1 0 0-18z'],
   ['ellipse', 'Oval', 'M12 6c5.5 0 10 2.7 10 6s-4.5 6-10 6S2 15.3 2 12s4.5-6 10-6z'],
@@ -109,6 +109,26 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
   const set = (patch: Partial<Design>) => setDesign({ ...d, ...patch })
   const fa = d.facade ?? DEFAULT_FACADE
   const setFa = (patch: Partial<Facade>) => set({ facade: { ...fa, ...patch } })
+  const tiers = d.tiers ?? []
+  const setTiers = (ts: Tier[]) => setDesign({ ...d, tiers: ts.length ? ts : undefined, towerFloors: ts.length ? ts.reduce((n, t) => n + t.floors, 0) : d.towerFloors })
+  const setTier = (i: number, patch: Partial<Tier>) => setTiers(tiers.map((t, k) => (k === i ? { ...t, ...patch } : t)))
+  const addTier = () => {
+    if (!tiers.length) {
+      // split the current block: lower two thirds as is, the top third narrower
+      const shape = d.shape === 'custom' ? 'rect' : d.shape
+      const low = Math.max(1, Math.round(d.towerFloors * 0.65))
+      const up = Math.max(1, d.towerFloors - low)
+      const w = d.width
+      const dp = shape === 'circle' ? d.width : d.depth
+      setTiers([
+        { floors: low, shape, width: w, depth: dp, dx: 0, dy: 0 },
+        { floors: up, shape, width: Math.max(4, Math.round(w * 0.7 * 2) / 2), depth: Math.max(4, Math.round(dp * 0.7 * 2) / 2), dx: 0, dy: Math.round(dp * 0.1 * 2) / 2 },
+      ])
+      return
+    }
+    const t = tiers[tiers.length - 1]
+    setTiers([...tiers, { ...t, floors: Math.max(1, Math.round(t.floors / 2)), width: Math.max(4, Math.round(t.width * 0.75 * 2) / 2), depth: Math.max(4, Math.round(t.depth * 0.75 * 2) / 2) }])
+  }
   const [pic, setPic] = useState<{ sample: (typeof SAMPLES)[number]; url: string; px: Pixels } | null>(null)
   const [gallery, setGallery] = useState(false)
   const [mode, setMode] = useState<'plan' | 'side'>('plan')
@@ -180,7 +200,7 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
   const useAiDraft = () => {
     const dr = aiPic?.res?.draft
     if (!dr) return
-    setDesign({ ...d, offsetX: 0, offsetY: 0, rotation: 0, ...dr, outline: d.outline, trim: false })
+    setDesign({ ...d, offsetX: 0, offsetY: 0, rotation: 0, tiers: undefined, ...dr, outline: d.outline, trim: false })
     setAiPic(null)
     setGallery(false)
   }
@@ -214,7 +234,7 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
     if (!reading?.r.ok) return
     const dr = reading.r.draft
     const hint = pic?.sample.hint ?? {}
-    setDesign({ ...d, offsetX: 0, offsetY: 0, rotation: 0, twist: 0, ...dr, ...hint, shape: dr.shape ?? hint.shape ?? (d.shape === 'custom' ? 'rect' : d.shape), trim: false })
+    setDesign({ ...d, offsetX: 0, offsetY: 0, rotation: 0, twist: 0, tiers: undefined, ...dr, ...hint, shape: dr.shape ?? hint.shape ?? (d.shape === 'custom' ? 'rect' : d.shape), trim: false })
     setPic(null)
     setReading(null)
     setGallery(false)
@@ -224,8 +244,8 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
     <div className="designer" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       <div className="dhead">
         <b>Shape your own building</b>
-        <button className="link" onClick={() => setGallery((g) => !g)}>
-          {gallery ? 'Hide pictures' : 'Start from a picture'}
+        <button className={gallery ? 'picbtn on' : 'picbtn'} onClick={() => setGallery((g) => !g)}>
+          {gallery ? 'Hide pictures' : ai ? 'Start from a photo' : 'Start from a picture'}
         </button>
       </div>
 
@@ -316,42 +336,101 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
         </div>
       )}
 
-      <div className="shapes">
-        {SHAPES.map(([s, label, path]) => (
-          <button key={s} className={d.shape === s ? 'on' : ''} title={label} onClick={() => set({ shape: s, depth: s === 'circle' ? d.width : d.depth })}>
-            <svg viewBox="0 0 24 24" width="20" height="20">
-              <path d={path} />
-            </svg>
-            <span>{label}</span>
-          </button>
-        ))}
-        {d.outline && (
-          <button className={d.shape === 'custom' ? 'on' : ''} title="Traced from your picture" onClick={() => set({ shape: 'custom' })}>
-            <svg viewBox="-0.6 -0.6 1.2 1.2" width="20" height="20">
-              <path d={'M' + d.outline.map(([x, y]) => `${x.toFixed(3)} ${(-y).toFixed(3)}`).join('L') + 'Z'} />
-            </svg>
-            <span>Traced</span>
-          </button>
-        )}
-      </div>
+      {!tiers.length && (
+        <details className="fold" open>
+          <summary>Shape and size</summary>
+          <div className="shapes">
+            {SHAPES.map(([sh, label, path]) => (
+              <button key={sh} className={d.shape === sh ? 'on' : ''} title={label} onClick={() => set({ shape: sh, depth: sh === 'circle' ? d.width : d.depth })}>
+                <svg viewBox="0 0 24 24" width="20" height="20">
+                  <path d={path} />
+                </svg>
+                <span>{label}</span>
+              </button>
+            ))}
+            {d.outline && (
+              <button className={d.shape === 'custom' ? 'on' : ''} title="Traced from your picture" onClick={() => set({ shape: 'custom' })}>
+                <svg viewBox="-0.6 -0.6 1.2 1.2" width="20" height="20">
+                  <path d={'M' + d.outline.map(([x, y]) => `${x.toFixed(3)} ${(-y).toFixed(3)}`).join('L') + 'Z'} />
+                </svg>
+                <span>Traced</span>
+              </button>
+            )}
+          </div>
+          <div className="dgrid">
+            <Slider label={d.shape === 'circle' ? 'Diameter' : 'Width'} unit=" m" value={d.width} min={6} max={100} step={0.5} onChange={(v) => set({ width: v, depth: d.shape === 'circle' ? v : d.depth })} />
+            {d.shape !== 'circle' && <Slider label="Depth" unit=" m" value={d.depth} min={6} max={100} step={0.5} onChange={(v) => set({ depth: v })} />}
+          </div>
+        </details>
+      )}
 
-      <div className="dgrid">
-        <Slider label={d.shape === 'circle' ? 'Diameter' : 'Width'} unit=" m" value={d.width} min={6} max={100} step={0.5} onChange={(v) => set({ width: v, depth: d.shape === 'circle' ? v : d.depth })} />
-        {d.shape !== 'circle' && <Slider label="Depth" unit=" m" value={d.depth} min={6} max={100} step={0.5} onChange={(v) => set({ depth: v })} />}
-        <Slider label="Tower floors" value={d.towerFloors} min={1} max={80} onChange={(v) => set({ towerFloors: v })} />
-        <Slider label="Podium floors" value={d.podiumFloors} min={0} max={8} onChange={(v) => set({ podiumFloors: v })} />
-        <Slider label="Rotate" unit="°" value={d.rotation} min={-90} max={90} onChange={(v) => set({ rotation: v })} />
-        <Slider label="Slide along road" unit=" m" value={d.offsetX} min={-40} max={40} step={0.5} onChange={(v) => set({ offsetX: v })} />
-        <Slider label="Move back from road" unit=" m" value={d.offsetY} min={-40} max={40} step={0.5} onChange={(v) => set({ offsetY: v })} />
-        <Slider label="Taper to the top" unit="%" value={d.taper} min={0} max={60} onChange={(v) => set({ taper: v })} />
-        <Slider label="Twist to the top" unit="°" value={d.twist} min={-120} max={120} step={5} onChange={(v) => set({ twist: v })} />
-      </div>
-      <label className="check">
-        <input type="checkbox" checked={d.podiumFill} disabled={!d.podiumFloors} onChange={(e) => set({ podiumFill: e.target.checked })} />
-        Podium fills the buildable area (otherwise it follows the tower shape)
-      </label>
-      <div className="look">
-        <b className="small">Look</b>
+      <details className="fold" open>
+        <summary>Floors{tiers.length ? ` and tiers (${tiers.length})` : ''}</summary>
+        <div className="dgrid">
+          <Slider label="Podium floors" value={d.podiumFloors} min={0} max={8} onChange={(v) => set({ podiumFloors: v })} />
+          {!tiers.length && <Slider label="Tower floors" value={d.towerFloors} min={1} max={80} onChange={(v) => set({ towerFloors: v })} />}
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={d.podiumFill} disabled={!d.podiumFloors} onChange={(e) => set({ podiumFill: e.target.checked })} />
+          Podium fills the buildable area
+        </label>
+        {tiers.map((t, i) => (
+          <div key={i} className="tier">
+            <div className="tierhead">
+              <b className="small">
+                Tier {i + 1} {i === 0 ? '(bottom)' : i === tiers.length - 1 ? '(top)' : ''}
+              </b>
+              <select value={t.shape} onChange={(e) => setTier(i, { shape: e.target.value as Tier['shape'] })} aria-label={`Tier ${i + 1} shape`}>
+                {SHAPES.map(([sh, label]) => (
+                  <option key={sh} value={sh}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              <button className="link" onClick={() => setTiers(tiers.filter((_, k) => k !== i))}>
+                remove
+              </button>
+            </div>
+            <div className="dgrid">
+              <Slider label="Floors" value={t.floors} min={1} max={60} onChange={(v) => setTier(i, { floors: v })} />
+              <Slider label={t.shape === 'circle' ? 'Diameter' : 'Width'} unit=" m" value={t.width} min={4} max={100} step={0.5} onChange={(v) => setTier(i, { width: v, depth: t.shape === 'circle' ? v : t.depth })} />
+              {t.shape !== 'circle' && <Slider label="Depth" unit=" m" value={t.depth} min={4} max={100} step={0.5} onChange={(v) => setTier(i, { depth: v })} />}
+              <Slider label="Shift sideways" unit=" m" value={t.dx} min={-40} max={40} step={0.5} onChange={(v) => setTier(i, { dx: v })} />
+              <Slider label="Shift back" unit=" m" value={t.dy} min={-40} max={40} step={0.5} onChange={(v) => setTier(i, { dy: v })} />
+            </div>
+          </div>
+        ))}
+        <div className="row">
+          <button onClick={addTier}>{tiers.length ? '+ Add a tier on top' : 'Split the tower into tiers'}</button>
+          {tiers.length > 0 && <button onClick={() => setTiers([])}>Back to one block</button>}
+        </div>
+      </details>
+
+      <details className="fold">
+        <summary>Position on the plot</summary>
+        <div className="dgrid">
+          <Slider label="Rotate" unit="°" value={d.rotation} min={-90} max={90} onChange={(v) => set({ rotation: v })} />
+          <Slider label="Slide along road" unit=" m" value={d.offsetX} min={-40} max={40} step={0.5} onChange={(v) => set({ offsetX: v })} />
+          <Slider label="Move back from road" unit=" m" value={d.offsetY} min={-40} max={40} step={0.5} onChange={(v) => set({ offsetY: v })} />
+        </div>
+      </details>
+
+      <details className="fold">
+        <summary>Form: taper, twist, terraces</summary>
+        <div className="dgrid">
+          <Slider label="Taper to the top" unit="%" value={d.taper} min={0} max={60} onChange={(v) => set({ taper: v })} />
+          <Slider label="Twist to the top" unit="°" value={d.twist} min={-120} max={120} step={5} onChange={(v) => set({ twist: v })} />
+          <Slider label="Stepped roof floors" value={fa.roofSteps} min={0} max={4} onChange={(v) => setFa({ roofSteps: v })} />
+          <Slider label="Each step back" unit=" m" value={fa.roofStepM} min={1} max={6} step={0.5} onChange={(v) => setFa({ roofStepM: v })} />
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={d.trim} onChange={(e) => set({ trim: e.target.checked })} />
+          Trim every floor to the legal envelope
+        </label>
+      </details>
+
+      <details className="fold">
+        <summary>Look: colours, windows, roof</summary>
         <div className="swatches">
           {(
             [
@@ -366,10 +445,39 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
             </label>
           ))}
         </div>
-        <div className="dgrid">
-          <Slider label="Windows" unit="%" value={fa.glazing} min={10} max={90} step={5} onChange={(v) => setFa({ glazing: v })} />
-          <Slider label="Stepped roof floors" value={fa.roofSteps} min={0} max={4} onChange={(v) => setFa({ roofSteps: v })} />
+        <div className="lookrow">
+          <span className="small muted">Windows</span>
+          <div className="seg small">
+            {(
+              [
+                ['ribbon', 'Bands'],
+                ['punched', 'Single'],
+                ['curtain', 'All glass'],
+              ] as const
+            ).map(([v, label]) => (
+              <button key={v} className={(fa.pattern ?? 'ribbon') === v ? 'on' : ''} onClick={() => setFa({ pattern: v })}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
+        <div className="lookrow">
+          <span className="small muted">Roof</span>
+          <div className="seg small">
+            {(
+              [
+                ['flat', 'Flat'],
+                ['gable', 'Gable'],
+                ['hip', 'Hip'],
+              ] as const
+            ).map(([v, label]) => (
+              <button key={v} className={(fa.roof ?? 'flat') === v ? 'on' : ''} onClick={() => setFa({ roof: v })}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {fa.pattern !== 'curtain' && <Slider label="Window share of each floor" unit="%" value={fa.glazing} min={10} max={90} step={5} onChange={(v) => setFa({ glazing: v })} />}
         <label className="check">
           <input type="checkbox" checked={fa.balconies} onChange={(e) => setFa({ balconies: e.target.checked })} />
           Balconies on home and hotel floors
@@ -378,11 +486,7 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
           <input type="checkbox" checked={fa.podiumGlass} onChange={(e) => setFa({ podiumGlass: e.target.checked })} />
           Glass lobby and podium
         </label>
-      </div>
-      <label className="check">
-        <input type="checkbox" checked={d.trim} onChange={(e) => set({ trim: e.target.checked })} />
-        Trim every floor to the legal envelope
-      </label>
+      </details>
     </div>
   )
 }
