@@ -33,7 +33,7 @@ describe('AI picture reading', () => {
     const [url, init] = f.mock.calls[0]
     expect(url).toContain('openrouter.ai')
     const body = JSON.parse(init.body as string)
-    expect(body.model).toBe('anthropic/claude-opus-5.5')
+    expect(body.model).toBe('anthropic/claude-sonnet-5.5')
     expect(body.messages[1].content[0].image_url.url).toMatch(/^data:image\/jpeg;base64,/)
     expect(body.response_format.json_schema.schema.required).toContain('tower_floors')
     expect((init.headers as Record<string, string>).authorization).toBe('Bearer k')

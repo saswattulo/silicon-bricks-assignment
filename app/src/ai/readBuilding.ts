@@ -1,12 +1,13 @@
 // Server side only (used by api/read-building.ts on Vercel). Never imported by the browser
 // bundle: it holds the prompt and calls OpenRouter with the key from the environment.
 //
-// A vision model (Claude Opus 5.5 by default, via OpenRouter) looks at a photo, plan or sketch and fills in the same parametric fields the
+// A vision model (Claude Sonnet 5.5 by default, via OpenRouter) looks at a photo, plan or sketch and fills in the same parametric fields the
 // "Your design" editor uses, so the draft stays editable and every rule check still runs on it.
 import { z } from 'zod'
 import type { Design } from '../rules/engine'
 
-export const DEFAULT_MODEL = 'anthropic/claude-opus-5.5'
+// Sonnet reads a building photo well and answers in seconds; Opus with deep thinking could outlast the function.
+export const DEFAULT_MODEL = 'anthropic/claude-sonnet-5.5'
 const ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions'
 export const MAX_IMAGE_BYTES = 3_000_000 // base64 length cap, ~2.2 MB of JPEG
 
@@ -107,11 +108,13 @@ export interface ReadOptions {
 export async function readBuilding(opts: ReadOptions, req: ReadRequest): Promise<ReadResult> {
   const hint = req.widthM ? ` The user says the building is about ${req.widthM} m wide.` : ''
   const res = await (opts.fetch ?? fetch)(ENDPOINT, {
+    signal: AbortSignal.timeout(100_000),
     method: 'POST',
     headers: { authorization: `Bearer ${opts.apiKey}`, 'content-type': 'application/json', 'x-title': 'Plot Envelope Bangkok' },
     body: JSON.stringify({
       model: opts.model || DEFAULT_MODEL,
-      max_tokens: 8000,
+      max_tokens: 4000,
+      reasoning: { effort: 'low' },
       messages: [
         { role: 'system', content: SYSTEM },
         {

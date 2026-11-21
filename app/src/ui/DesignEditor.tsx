@@ -57,7 +57,7 @@ const API = '/api/read-building'
 interface AiResult { draft: Partial<Design>; notes: string[]; confidence: 'low' | 'medium' | 'high'; view: string }
 
 /** Shrink a photo to at most 1024 px JPEG before it goes to the reading service. */
-async function toJpeg(file: Blob, max = 1024): Promise<{ data: string; url: string }> {
+async function toJpeg(file: Blob, max = 896): Promise<{ data: string; url: string }> {
   const bmp = await createImageBitmap(file)
   const k = Math.min(1, max / Math.max(bmp.width, bmp.height))
   const c = document.createElement('canvas')
@@ -154,7 +154,18 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
     try {
       const { data, url } = await toJpeg(file)
       setAiPic({ url })
-      const r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ image: data, mediaType: 'image/jpeg' }) })
+      const r = await fetch(API, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ image: data, mediaType: 'image/jpeg' }),
+        signal: AbortSignal.timeout(130_000),
+      }).catch((e: unknown) => {
+        throw new Error(
+          e instanceof Error && e.name === 'TimeoutError'
+            ? 'The reading took too long. Please try again.'
+            : 'The connection to the reading service dropped. Please try again.',
+        )
+      })
       const j = await r.json().catch(() => ({ error: 'The reading service did not answer.' }))
       if (!r.ok) throw new Error(j.error ?? 'The picture could not be read.')
       setAiPic({ url, res: j as AiResult })

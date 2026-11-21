@@ -1,6 +1,6 @@
 // Vercel serverless function: POST a building picture, get back a draft design.
 // The OpenRouter key lives only in the Vercel environment (OPENROUTER_API_KEY); the browser never sees it.
-// OPENROUTER_MODEL optionally overrides the vision model (default anthropic/claude-opus-5.5).
+// OPENROUTER_MODEL optionally overrides the vision model (default anthropic/claude-sonnet-5.5).
 // GET tells the page whether the key is set, so it can offer photo upload or fall back to samples.
 import { readBuilding, validate, ReadError } from '../src/ai/readBuilding.js'
 
@@ -26,6 +26,7 @@ export async function POST(request: Request) {
   } catch (e) {
     if (e instanceof ReadError) return json({ error: e.message }, e.status)
     console.error(e)
+    if (e instanceof Error && e.name === 'TimeoutError') return json({ error: 'The reading took too long. Try again, or try a simpler picture.' }, 504)
     return json({ error: 'Something went wrong reading the picture.' }, 500)
   }
 }
