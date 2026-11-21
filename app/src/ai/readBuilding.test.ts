@@ -15,7 +15,26 @@ const fake = (content: string | null, status = 200, refusal: string | null = nul
 }
 const img = { image: 'aGVsbG8=', mediaType: 'image/jpeg' as const }
 
+const seq = (...rs: [number, unknown][]) => {
+  const f = vi.fn(async (_u: string, _i: RequestInit) => { const [st, b] = rs.shift()!; return new Response(JSON.stringify(b), { status: st }) })
+  return { opts: { apiKey: 'k', fetch: f as unknown as typeof fetch }, f }
+}
+
 describe('AI picture reading', () => {
+  it('falls back to a plain prompt when strict output is rejected, and accepts a missing look', async () => {
+    const { facade: _f, ...core } = { ...base, facade: 0 }
+    const noLook = Object.fromEntries(Object.entries(core).filter(([k]) => !['wall_colour', 'glass_colour', 'frame_colour', 'glazing_pct', 'podium_glazed', 'balconies', 'roof_steps', 'roof_step_m'].includes(k)))
+    const { opts, f } = seq([400, { error: { message: 'response_format not supported', code: 400 } }], [200, { choices: [{ message: { content: 'Here:\n```json\n' + JSON.stringify(noLook) + '\n```' } }] }])
+    const r = await readBuilding(opts, img)
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(f.mock.calls[1][1].body as string).response_format).toBeUndefined()
+    expect(r.draft.towerFloors).toBe(22)
+    expect(r.draft.facade?.glazing).toBe(45)
+  })
+  it('shows the upstream reason when both requests fail', async () => {
+    const e = { error: { message: 'model not found', code: 400 } }
+    await expect(readBuilding(seq([400, e], [400, e]).opts, img)).rejects.toThrow(/400: model not found/)
+  })
   it('maps a reading to editor fields within slider ranges', () => {
     const d = toDraft({ ...base, tower_floors: 140, taper_pct: 90, width_m: 3 })
     expect(d).toMatchObject({ shape: 'circle', width: 6, depth: 6, towerFloors: 80, podiumFloors: 4, podiumFill: true, taper: 60, twist: 15 })

@@ -18,6 +18,8 @@ import { ensureCCW, signedArea } from './geo/geom'
 import { DEFAULT_DESIGN, analyse, type BuildingType, type Design, type Road } from './rules/engine'
 import { detectRoads } from './map/roads'
 import Panel from './ui/Panel'
+import { readSharedFromHash, shareUrl, type Shared } from './share'
+import { checkDeed, EMPTY_DEED, type Deed } from './rules/deed'
 import './App.css'
 
 // Demo plot: east side of Thong Lo (Sukhumvit Soi 55), zone ย.8-23. Footprint of low shophouses today.
@@ -39,12 +41,22 @@ function toCCW(ring: [number, number][]): [number, number][] {
   return signedArea(local) < 0 ? [...ring].reverse() : ring
 }
 
+// A shared link (#s=...) opens with that exact setup.
+const SHARED = readSharedFromHash()
+
 export default function App() {
-  const [plot, setPlot] = useState<[number, number][]>(DEMO_PLOT)
-  const [roads, setRoads] = useState<(Road | null)[]>(DEMO_ROADS)
-  const [type, setTypeRaw] = useState<BuildingType>('condo')
-  const [systemId, setSystemId] = useState('rc')
-  const [customs, setCustomsRaw] = useState<CustomBuilding[]>(loadCustoms)
+  const sh = SHARED
+  const [plot, setPlot] = useState<[number, number][]>(sh?.plot ?? DEMO_PLOT)
+  const [roads, setRoads] = useState<(Road | null)[]>(sh?.roads ?? DEMO_ROADS)
+  const [type, setTypeRaw] = useState<BuildingType>(sh?.type ?? 'condo')
+  const [systemId, setSystemId] = useState(sh?.systemId ?? 'rc')
+  const [customs, setCustomsRaw] = useState<CustomBuilding[]>(() => {
+    const own = loadCustoms()
+    return sh?.custom && !own.some((c) => c.id === sh.custom!.id) ? [...own, clampCustom(sh.custom)] : own
+  })
+  const [deed, setDeed] = useState<Deed>(sh?.deed ? { ...EMPTY_DEED, ...sh.deed } : EMPTY_DEED)
+  const [busy, setBusy] = useState('')
+  const [toast, setToast] = useState<{ text: string; link?: string } | null>(null)
   const setCustoms = useCallback((c: CustomBuilding[]) => {
     setCustomsRaw(c)
     try {
@@ -68,16 +80,16 @@ export default function App() {
     () => customs.find((c) => c.id === systemId && c.use === type) ?? presetsFor(type).find((s) => s.id === systemId) ?? presetsFor(type)[0],
     [customs, systemId, type],
   )
-  const [nearStation, setNearStation] = useState(true)
-  const [bonusPct, setBonusPct] = useState(0)
+  const [nearStation, setNearStation] = useState(sh?.nearStation ?? true)
+  const [bonusPct, setBonusPct] = useState(sh?.bonusPct ?? 0)
   const [mode, setMode] = useState<Mode>('view')
-  const [conceptId, setConceptId] = useState('tower')
+  const [conceptId, setConceptId] = useState(sh?.conceptId ?? 'tower')
   const [envelopeMode, setEnvelopeMode] = useState<EnvelopeMode>('auto')
   const [showConcept, setShowConcept] = useState(true)
   const [basemap, setBasemap] = useState<Basemap>('map')
   const mapRef = useRef<maplibregl.Map | null>(null)
   const [view, setView] = useState<View>('3d')
-  const [design, setDesign] = useState<Design>(DEFAULT_DESIGN)
+  const [design, setDesign] = useState<Design>(sh?.design ? { ...DEFAULT_DESIGN, ...sh.design } : DEFAULT_DESIGN)
   const [showContext, setShowContext] = useState(true)
   const [shadowsOn, setShadowsOn] = useState(true)
   const [month, setMonth] = useState(11) // 21 December: longest shadows of the year
@@ -140,6 +152,95 @@ export default function App() {
     mapRef.current?.flyTo({ center: [100.5806, 13.72668], zoom: 17, pitch: 58, bearing: -28 })
   }, [])
 
+  const shared = (): Shared => ({
+    v: 1,
+    plot,
+    roads,
+    type,
+    systemId,
+    custom: customs.find((c) => c.id === systemId),
+    nearStation,
+    bonusPct,
+    conceptId,
+    design,
+    deed: checkDeed(deed, 1) ? deed : undefined,
+  })
+
+  const flash = (text: string, link?: string) => {
+    setToast({ text, link })
+    window.setTimeout(() => setToast((t) => (t?.text === text ? null : t)), link ? 12000 : 3500)
+  }
+
+  const onShare = async () => {
+    const url = shareUrl(shared())
+    try {
+      await navigator.clipboard.writeText(url)
+      flash('Link copied. Anyone with it sees this plot, roads, building and design.')
+    } catch {
+      flash('Copy this link to share this setup:', url)
+    }
+  }
+
+  // Snapshot of the 3D view for each concept, then the PDF (jsPDF is loaded only when asked for).
+  const onPdf = async () => {
+    const map = mapRef.current
+    if (!analysis || analysis.error) return
+    setBusy('pdf')
+    const was = conceptId
+    const shots: Record<string, string> = {}
+    try {
+      const cam = map && { center: map.getCenter(), zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing() }
+      if (map) {
+        // frame the plot the same way for every snapshot
+        map.jumpTo({ center: centroidLL(plot), zoom: 18.2, pitch: 55, bearing: -28 })
+        await new Promise<void>((r) => {
+          const t = window.setTimeout(r, 4000)
+          map.once('idle', () => (window.clearTimeout(t), r()))
+        })
+        for (const c of analysis.concepts) {
+          setConceptId(c.id)
+          await new Promise((r) => window.setTimeout(r, 900))
+          shots[c.id] = await new Promise<string>((res) => {
+            const t = window.setTimeout(() => res(''), 3000)
+            map.once('render', () => {
+              window.clearTimeout(t)
+              try {
+                res(map.getCanvas().toDataURL('image/jpeg', 0.88))
+              } catch {
+                res('')
+              }
+            })
+            map.triggerRepaint()
+          })
+        }
+      }
+      setConceptId(was)
+      if (map && cam) map.jumpTo(cam)
+      const { buildReport } = await import('./report')
+      const doc = buildReport({
+        analysis,
+        plot: inputs.plot,
+        plotLL: plot,
+        plotArea: Math.abs(signedArea(inputs.plot)),
+        roads,
+        type,
+        system,
+        nearStation,
+        bonusPct,
+        deed: checkDeed(deed, Math.abs(signedArea(inputs.plot))),
+        shareLink: shareUrl(shared()),
+        shots: Object.fromEntries(Object.entries(shots).filter(([, v]) => v.startsWith('data:image'))),
+      })
+      doc.save(`plot-envelope-${new Date().toISOString().slice(0, 10)}.pdf`)
+      flash('PDF report downloaded.')
+    } catch (e) {
+      console.error(e)
+      setConceptId(was)
+      flash('The PDF could not be made. Please try again.')
+    }
+    setBusy('')
+  }
+
   const sunLL = centroidLL(plot)
   const sun = useMemo(() => sunPosition(bangkokDate(2026, month, 21, hour), sunLL[1], sunLL[0]), [month, hour, sunLL[0], sunLL[1]]) // eslint-disable-line react-hooks/exhaustive-deps
   const sv = shadowVector(sun)
@@ -177,6 +278,11 @@ export default function App() {
         setCustoms={setCustoms}
         design={design}
         setDesign={setDesign}
+        deed={deed}
+        setDeed={setDeed}
+        onShare={onShare}
+        onPdf={onPdf}
+        busy={busy}
       />
       <div className="stage">
         <MapView
@@ -195,7 +301,10 @@ export default function App() {
           onPlotChange={onPlotChange}
           onModeChange={setMode}
           onEdgeClick={toggleRoad}
-          onMapReady={(m) => (mapRef.current = m)}
+          onMapReady={(m) => {
+            mapRef.current = m
+            if (sh) m.jumpTo({ center: centroidLL(sh.plot) })
+          }}
         />
         <div className="overlay top-right">
           <div className="seg">
@@ -270,6 +379,12 @@ export default function App() {
             </>
           )}
         </div>
+        {toast && (
+          <div className="toast" role="status">
+            {toast.text}
+            {toast.link && <input readOnly value={toast.link} onFocus={(e) => e.target.select()} />}
+          </div>
+        )}
         {mode !== 'view' && (
           <div className="overlay bottom-center hint">
             {mode === 'draw' ? 'Click to place corners. Click the first corner (or double-click) to close the plot.' : 'Drag corners to reshape. Drag a midpoint to add a corner. Right-click a corner to delete it.'}

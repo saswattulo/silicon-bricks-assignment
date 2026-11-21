@@ -17,6 +17,8 @@ import { FAR_TABLE } from '../rules/zones'
 import type { CustomBuilding } from '../rules/systems'
 import BuildingSystem from './BuildingSystem'
 import DesignEditor from './DesignEditor'
+import DeedInput from './DeedInput'
+import type { Deed } from '../rules/deed'
 import type { Mode } from '../map/MapView'
 
 interface Props {
@@ -45,6 +47,11 @@ interface Props {
   setCustoms: (c: CustomBuilding[]) => void
   design: Design
   setDesign: (d: Design) => void
+  deed: Deed
+  setDeed: (d: Deed) => void
+  onShare: () => void
+  onPdf: () => void
+  busy: string
 }
 
 const rai = (m2: number) => {
@@ -65,6 +72,14 @@ export default function Panel(p: Props) {
         <div>
           <h1>Plot Envelope · Bangkok</h1>
           <p>What can you build on this plot, before you hire an architect.</p>
+        </div>
+        <div className="exports">
+          <button onClick={p.onShare} disabled={!!p.busy} title="Copy a link that opens this exact setup">
+            Share link
+          </button>
+          <button className="primary" onClick={p.onPdf} disabled={!!p.busy || !a || !!a.error} title="Download a PDF report of this plot and all concepts">
+            {p.busy === 'pdf' ? 'Making PDF…' : 'PDF report'}
+          </button>
         </div>
       </header>
 
@@ -96,6 +111,7 @@ export default function Panel(p: Props) {
             <em>any shape</em>
           </div>
         </div>
+        <DeedInput deed={p.deed} setDeed={p.setDeed} drawnM2={p.plotArea} farCap={L?.farCap ?? null} />
         <div className="row">
           <button className={p.mode === 'draw' ? 'primary on' : 'primary'} onClick={() => p.setMode(p.mode === 'draw' ? 'view' : 'draw')}>
             {p.mode === 'draw' ? 'Cancel drawing' : 'Draw a new plot'}

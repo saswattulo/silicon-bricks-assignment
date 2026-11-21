@@ -118,6 +118,31 @@ export function validate(body: unknown): ReadRequest {
   return { image: b.image, mediaType: b.mediaType!, widthM }
 }
 
+// Parse leniently: the massing fields must be there; look fields fall back to defaults.
+const Lenient = Reading.partial({ wall_colour: true, glass_colour: true, frame_colour: true, glazing_pct: true, podium_glazed: true, balconies: true, roof_steps: true, roof_step_m: true, notes: true })
+function parseReading(text: string): Reading | null {
+  try {
+    const p = Lenient.safeParse(JSON.parse(text))
+    if (!p.success) return null
+    const d = p.data
+    return {
+      ...d,
+      wall_colour: d.wall_colour ?? '',
+      glass_colour: d.glass_colour ?? '',
+      frame_colour: d.frame_colour ?? '',
+      glazing_pct: d.glazing_pct ?? 45,
+      podium_glazed: d.podium_glazed ?? false,
+      balconies: d.balconies ?? false,
+      roof_steps: d.roof_steps ?? 0,
+      roof_step_m: d.roof_step_m ?? 2,
+      notes: d.notes ?? [],
+    }
+  } catch {
+    return null
+  }
+}
+const upstream = (s: string) => s.replace(/\s+/g, ' ').replace(/[^\x20-\x7E]/g, '').slice(0, 160)
+
 // JSON schema for OpenRouter's structured output (strict: every field required, no extras).
 const SCHEMA = (() => {
   const j = z.toJSONSchema(Reading) as Record<string, unknown>
@@ -134,49 +159,60 @@ export interface ReadOptions {
 /** One vision call through OpenRouter: picture in, draft design out. */
 export async function readBuilding(opts: ReadOptions, req: ReadRequest): Promise<ReadResult> {
   const hint = req.widthM ? ` The user says the building is about ${req.widthM} m wide.` : ''
-  const res = await (opts.fetch ?? fetch)(ENDPOINT, {
-    signal: AbortSignal.timeout(100_000),
-    method: 'POST',
-    headers: { authorization: `Bearer ${opts.apiKey}`, 'content-type': 'application/json', 'x-title': 'Plot Envelope Bangkok' },
-    body: JSON.stringify({
-      model: opts.model || DEFAULT_MODEL,
-      max_tokens: 4000,
-      reasoning: { effort: 'low' },
-      messages: [
-        { role: 'system', content: SYSTEM },
-        {
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: `data:${req.mediaType};base64,${req.image}` } },
-            { type: 'text', text: `Read this building and estimate its massing.${hint}` },
-          ],
-        },
-      ],
-      response_format: { type: 'json_schema', json_schema: { name: 'building_reading', strict: true, schema: SCHEMA } },
-    }),
-  })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    console.error('OpenRouter error', res.status, detail.slice(0, 500))
-    if (res.status === 401) throw new ReadError('The reading service key is not valid.', 502)
-    if (res.status === 402) throw new ReadError('The reading service is out of credit.', 502)
-    if (res.status === 429 || res.status >= 500) throw new ReadError('The reading service is busy. Try again in a minute.', 502)
-    throw new ReadError('The reading service failed. Try again.', 502)
-  }
-  const body = (await res.json()) as { choices?: { message?: { content?: string | null; refusal?: string | null }; finish_reason?: string }[] }
-  const choice = body.choices?.[0]
-  if (choice?.message?.refusal) throw new ReadError('This picture could not be read. Try another one.', 422)
-  let text = choice?.message?.content ?? ''
-  text = text.replace(/^```(?:json)?\s*|\s*```$/g, '')
-  const parsed = (() => {
+  const image = { type: 'image_url', image_url: { url: `data:${req.mediaType};base64,${req.image}` } }
+  const ask = `Read this building and estimate its massing.${hint}`
+  // First try strict structured output. If the model or provider rejects that request shape,
+  // ask again with the schema in the prompt and validate the JSON ourselves.
+  const attempts = [
+    { response_format: { type: 'json_schema', json_schema: { name: 'building_reading', strict: true, schema: SCHEMA } }, text: ask },
+    { text: `${ask}\nReply with only a JSON object (no code fence) matching this JSON schema:\n${JSON.stringify(SCHEMA)}` },
+  ]
+  let text = ''
+  for (let i = 0; i < attempts.length; i++) {
+    const at = attempts[i]
+    const res = await (opts.fetch ?? fetch)(ENDPOINT, {
+      signal: AbortSignal.timeout(100_000),
+      method: 'POST',
+      headers: { authorization: `Bearer ${opts.apiKey}`, 'content-type': 'application/json', 'x-title': 'Plot Envelope Bangkok' },
+      body: JSON.stringify({
+        model: opts.model || DEFAULT_MODEL,
+        max_tokens: 4000,
+        reasoning: { effort: 'low' },
+        messages: [
+          { role: 'system', content: SYSTEM },
+          { role: 'user', content: [image, { type: 'text', text: at.text }] },
+        ],
+        ...(at.response_format ? { response_format: at.response_format } : {}),
+      }),
+    })
+    const raw = await res.text().catch(() => '')
+    let body: { error?: { message?: string; code?: number }; choices?: { message?: { content?: string | null; refusal?: string | null } }[] } = {}
     try {
-      return Reading.safeParse(JSON.parse(text))
+      body = JSON.parse(raw)
     } catch {
-      return null
+      /* not JSON */
     }
-  })()
-  if (!parsed?.success) throw new ReadError('The reading came back incomplete. Please try again.', 502)
-  const r = parsed.data
+    const status = res.ok && body.error ? (body.error.code ?? 502) : res.status
+    if (!res.ok || body.error) {
+      const why = upstream(body.error?.message ?? raw)
+      console.error('OpenRouter error', status, raw.slice(0, 800))
+      if (status === 401) throw new ReadError('The reading service key is not valid.', 502)
+      if (status === 402) throw new ReadError('The reading service is out of credit.', 502)
+      if (status === 429) throw new ReadError('The reading service is busy. Try again in a minute.', 502)
+      if (i + 1 < attempts.length && status !== 408) continue // try the plain-prompt request
+      throw new ReadError(`The reading service failed (${status}${why ? `: ${why}` : ''}). Try again.`, 502)
+    }
+    const choice = body.choices?.[0]
+    if (choice?.message?.refusal) throw new ReadError('This picture could not be read. Try another one.', 422)
+    text = (choice?.message?.content ?? '').trim()
+    const m = /\{[\s\S]*\}/.exec(text)
+    text = m ? m[0] : text
+    if (parseReading(text) || i + 1 >= attempts.length) break
+    console.error('Unreadable reply, retrying without strict schema:', text.slice(0, 300))
+  }
+  const parsed = parseReading(text)
+  if (!parsed) throw new ReadError('The reading came back incomplete. Please try again.', 502)
+  const r = parsed
   if (!r.is_building) throw new ReadError('That picture does not seem to show a building. Try a photo, plan or sketch of one.', 422)
   return { draft: toDraft(r, req.widthM), notes: r.notes.slice(0, 5), confidence: r.confidence, view: r.view }
 }
