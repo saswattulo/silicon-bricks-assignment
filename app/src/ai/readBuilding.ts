@@ -1,14 +1,13 @@
 // Server side only (used by api/read-building.ts on Vercel). Never imported by the browser
-// bundle: it holds the prompt and talks to the Claude API with the key from the environment.
+// bundle: it holds the prompt and calls OpenRouter with the key from the environment.
 //
-// Claude looks at a photo, plan or sketch and fills in the same parametric fields the
+// A vision model (Claude Opus 5.5 by default, via OpenRouter) looks at a photo, plan or sketch and fills in the same parametric fields the
 // "Your design" editor uses, so the draft stays editable and every rule check still runs on it.
-import type Anthropic from '@anthropic-ai/sdk'
-import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod'
 import { z } from 'zod'
 import type { Design } from '../rules/engine'
 
-export const MODEL = 'claude-opus-5-5'
+export const DEFAULT_MODEL = 'anthropic/claude-opus-5.5'
+const ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions'
 export const MAX_IMAGE_BYTES = 3_000_000 // base64 length cap, ~2.2 MB of JPEG
 
 export const Reading = z.object({
@@ -17,8 +16,8 @@ export const Reading = z.object({
   shape: z.enum(['rect', 'circle', 'ellipse', 'L', 'hexagon', 'octagon', 'triangle']).describe('closest footprint shape of the main tower'),
   width_m: z.number().describe('estimated width of the main tower footprint in metres (diameter if round)'),
   depth_m: z.number().describe('estimated depth of the main tower footprint in metres'),
-  tower_floors: z.number().int().describe('storeys above the podium, or all storeys if there is no podium'),
-  podium_floors: z.number().int().describe('storeys of a wider base, 0 if none'),
+  tower_floors: z.number().describe('storeys above the podium, or all storeys if there is no podium'),
+  podium_floors: z.number().describe('storeys of a wider base, 0 if none'),
   podium_wider: z.boolean().describe('true if the podium is clearly wider than the tower above it'),
   taper_pct: z.number().describe('how much smaller the top floor is than the bottom tower floor, in percent, 0 if straight'),
   twist_deg: z.number().describe('how far the top floor turns relative to the bottom, in degrees, 0 if none'),
@@ -91,27 +90,63 @@ export function validate(body: unknown): ReadRequest {
   return { image: b.image, mediaType: b.mediaType!, widthM }
 }
 
-/** One Claude call: picture in, draft design out. */
-export async function readBuilding(client: Anthropic, req: ReadRequest): Promise<ReadResult> {
+// JSON schema for OpenRouter's structured output (strict: every field required, no extras).
+const SCHEMA = (() => {
+  const j = z.toJSONSchema(Reading) as Record<string, unknown>
+  delete j.$schema
+  return j
+})()
+
+export interface ReadOptions {
+  apiKey: string
+  model?: string
+  fetch?: typeof fetch
+}
+
+/** One vision call through OpenRouter: picture in, draft design out. */
+export async function readBuilding(opts: ReadOptions, req: ReadRequest): Promise<ReadResult> {
   const hint = req.widthM ? ` The user says the building is about ${req.widthM} m wide.` : ''
-  const msg = await client.messages.parse({
-    model: MODEL,
-    max_tokens: 8000,
-    system: SYSTEM,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: req.mediaType, data: req.image } },
-          { type: 'text', text: `Read this building and estimate its massing.${hint}` },
-        ],
-      },
-    ],
-    output_config: { format: zodOutputFormat(Reading) },
+  const res = await (opts.fetch ?? fetch)(ENDPOINT, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${opts.apiKey}`, 'content-type': 'application/json', 'x-title': 'Plot Envelope Bangkok' },
+    body: JSON.stringify({
+      model: opts.model || DEFAULT_MODEL,
+      max_tokens: 8000,
+      messages: [
+        { role: 'system', content: SYSTEM },
+        {
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:${req.mediaType};base64,${req.image}` } },
+            { type: 'text', text: `Read this building and estimate its massing.${hint}` },
+          ],
+        },
+      ],
+      response_format: { type: 'json_schema', json_schema: { name: 'building_reading', strict: true, schema: SCHEMA } },
+    }),
   })
-  if (msg.stop_reason === 'refusal') throw new ReadError('This picture could not be read. Try another one.', 422)
-  const r = msg.parsed_output
-  if (!r) throw new ReadError('The reading came back incomplete. Please try again.', 502)
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    console.error('OpenRouter error', res.status, detail.slice(0, 500))
+    if (res.status === 401) throw new ReadError('The reading service key is not valid.', 502)
+    if (res.status === 402) throw new ReadError('The reading service is out of credit.', 502)
+    if (res.status === 429 || res.status >= 500) throw new ReadError('The reading service is busy. Try again in a minute.', 502)
+    throw new ReadError('The reading service failed. Try again.', 502)
+  }
+  const body = (await res.json()) as { choices?: { message?: { content?: string | null; refusal?: string | null }; finish_reason?: string }[] }
+  const choice = body.choices?.[0]
+  if (choice?.message?.refusal) throw new ReadError('This picture could not be read. Try another one.', 422)
+  let text = choice?.message?.content ?? ''
+  text = text.replace(/^```(?:json)?\s*|\s*```$/g, '')
+  const parsed = (() => {
+    try {
+      return Reading.safeParse(JSON.parse(text))
+    } catch {
+      return null
+    }
+  })()
+  if (!parsed?.success) throw new ReadError('The reading came back incomplete. Please try again.', 502)
+  const r = parsed.data
   if (!r.is_building) throw new ReadError('That picture does not seem to show a building. Try a photo, plan or sketch of one.', 422)
   return { draft: toDraft(r, req.widthM), notes: r.notes.slice(0, 5), confidence: r.confidence, view: r.view }
 }
