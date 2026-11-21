@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import earcut from 'earcut'
 import type * as maplibregl from 'maplibre-gl'
 import type { MultiPoly, Pt, Ring } from '../geo/geom'
-import { difference } from '../geo/geom'
+import { bbox, difference, insetMP, mpArea } from '../geo/geom'
 import type { LocalFrame } from '../geo/frame'
 import { type Concept, type Envelope, type Floor, clipToPlane, planeHeight } from '../rules/engine'
 
@@ -97,25 +97,129 @@ const USE_COLOUR: Record<Floor['use'], number> = {
   amenity: 0xb9d7b0,
 }
 
+const hex = (s: string | undefined, fb: number) => (s && /^#[0-9a-f]{6}$/i.test(s) ? new THREE.Color(s) : new THREE.Color(fb))
+
+/** Horizontal band of wall on every ring of mp, from z0 to z1. */
+const band = (out: number[], mp: MultiPoly, z0: number, z1: number) => z1 - z0 > 0.01 && pushWalls(out, mp, z0, () => z1)
+
+/** Vertical mullion lines every `step` m along each ring, from z0 to z1. */
+function mullions(out: number[], mp: MultiPoly, z0: number, z1: number, step: number) {
+  for (const poly of mp)
+    for (const r of poly)
+      for (let i = 0; i < r.length; i++) {
+        const a = r[i]
+        const b = r[(i + 1) % r.length]
+        const L = Math.hypot(b[0] - a[0], b[1] - a[1])
+        const n = Math.floor(L / step)
+        for (let k = 0; k <= n; k++) {
+          const t = n ? k / n : 0
+          const x = a[0] + (b[0] - a[0]) * t
+          const y = a[1] + (b[1] - a[1]) * t
+          out.push(x, y, z0, x, y, z1)
+        }
+      }
+}
+
+function outlineAt(out: number[], mp: MultiPoly, z: number) {
+  for (const poly of mp)
+    for (const r of poly)
+      for (let i = 0; i < r.length; i++) {
+        const a = r[i]
+        const b = r[(i + 1) % r.length]
+        out.push(a[0], a[1], z, b[0], b[1], z)
+      }
+}
+
+/**
+ * Concept massing drawn as a building: slab edges, window bands with mullions, a glazed lobby,
+ * open parking decks, recessed balconies on home and hotel floors, parapets and roof plant.
+ * Floor plates come straight from the rules engine, so what is drawn is what was checked.
+ */
 export function conceptGroup(c: Concept): THREE.Group {
   const g = new THREE.Group()
-  const byUse = new Map<Floor['use'], number[]>()
+  const fa = c.facade
+  const buf = { wall: [] as number[], parking: [] as number[], lobby: [] as number[], glass: [] as number[], dark: [] as number[], frame: [] as number[], roof: [] as number[], plant: [] as number[], rail: [] as number[], lines: [] as number[], mull: [] as number[] }
+  const mainUse = c.blocks.flatMap((b) => b.floors).find((f) => f.use !== 'lobby' && f.use !== 'parking')?.use ?? 'residential'
+  const glazingFor = (use: Floor['use']) => (fa ? fa.glazing / 100 : use === 'office' ? 0.7 : use === 'hotel' ? 0.5 : 0.45)
+  const balconies = fa ? fa.balconies : true
+  const podiumGlass = fa ? fa.podiumGlass : true
+  let lineBudget = 60000
+
   for (const b of c.blocks)
-    for (const f of b.floors) {
-      const arr = byUse.get(f.use) ?? []
-      const gap = Math.min(0.35, (f.z1 - f.z0) * 0.12)
-      pushTriangles(arr, f.plate, () => f.z1 - gap)
-      pushTriangles(arr, f.plate, () => f.z0)
-      pushWalls(arr, f.plate, f.z0, () => f.z1 - gap)
-      byUse.set(f.use, arr)
-    }
-  for (const [use, arr] of byUse) {
-    const geom = geometryFrom(arr)
-    const mat = new THREE.MeshLambertMaterial({ color: USE_COLOUR[use], side: THREE.DoubleSide })
-    g.add(new THREE.Mesh(geom, mat))
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 25), new THREE.LineBasicMaterial({ color: 0x5b5146, transparent: true, opacity: 0.55 }))
-    g.add(edges)
+    b.floors.forEach((f, i) => {
+      const H = f.z1 - f.z0
+      const slab = Math.min(0.35, H * 0.1)
+      const top = f.z1
+      const next = b.floors[i + 1]
+      // slab edge and floor top (roof colour where it is open to the sky)
+      band(buf.frame, f.plate, top - slab, top)
+      pushTriangles(buf.roof, f.plate, () => top)
+      outlineAt(buf.lines, f.plate, top)
+      const z0 = f.z0
+      const zt = top - slab
+      if (f.use === 'parking' && !(podiumGlass && fa)) {
+        // open deck: solid upstand, dark opening, thin spandrel
+        const open = (zt - z0) * 0.45
+        const sill = (zt - z0 - open) * 0.6
+        band(buf.parking, f.plate, z0, z0 + sill)
+        band(buf.dark, f.plate, z0 + sill, z0 + sill + open)
+        band(buf.parking, f.plate, z0 + sill + open, zt)
+      } else if (f.use === 'lobby' || (f.use === 'parking' && podiumGlass)) {
+        band(buf.lobby, f.plate, z0, z0 + 0.25)
+        band(buf.glass, f.plate, z0 + 0.25, zt)
+        if (lineBudget > 0) mullions(buf.mull, f.plate, z0 + 0.25, zt, 2.4)
+      } else if (balconies && (f.use === 'residential' || f.use === 'hotel') && i > 0) {
+        // recessed balcony: glass railing on the edge, glazed wall 1.4 m back
+        const inner = insetMP(f.plate, 1.4)
+        band(buf.rail, f.plate, z0, z0 + 1.1)
+        if (inner.length) {
+          band(buf.glass, inner, z0, zt)
+          if (lineBudget > 0) mullions(buf.mull, inner, z0, zt, 3.2)
+        } else band(buf.glass, f.plate, z0, zt)
+      } else {
+        const gl = glazingFor(f.use) * (zt - z0)
+        const sill = (zt - z0 - gl) * 0.6
+        band(buf.wall, f.plate, z0, z0 + sill)
+        band(buf.glass, f.plate, z0 + sill, z0 + sill + gl)
+        band(buf.wall, f.plate, z0 + sill + gl, zt)
+        if (lineBudget > 0) mullions(buf.mull, f.plate, z0 + sill, z0 + sill + gl, f.use === 'office' ? 1.5 : 1.8)
+      }
+      lineBudget = 60000 - buf.mull.length / 6
+      // roof: parapet on the part open to the sky, plant on the very top
+      if (!next || next.z0 > top + 0.01) {
+        band(buf.wall, f.plate, top, top + 1.0)
+        outlineAt(buf.lines, f.plate, top + 1.0)
+        const [x0, y0, x1, y1] = bbox(f.plate)
+        const plant = insetMP(f.plate, Math.min(x1 - x0, y1 - y0) * 0.32)
+        if (plant.length) {
+          band(buf.plant, plant, top, top + 3)
+          pushTriangles(buf.plant, plant, () => top + 3)
+        }
+      } else {
+        const open = difference(f.plate, next.plate)
+        if (mpArea(open) > 4) band(buf.rail, [[...f.plate[0]]] as MultiPoly, top, top + 1.1) // terrace railing
+      }
+    })
+
+  const wallC = hex(fa?.wall, USE_COLOUR[mainUse])
+  const mesh = (arr: number[], mat: THREE.Material) => arr.length && g.add(new THREE.Mesh(geometryFrom(arr), mat))
+  mesh(buf.wall, new THREE.MeshLambertMaterial({ color: wallC, side: THREE.DoubleSide }))
+  mesh(buf.parking, new THREE.MeshLambertMaterial({ color: USE_COLOUR.parking, side: THREE.DoubleSide }))
+  mesh(buf.lobby, new THREE.MeshLambertMaterial({ color: USE_COLOUR.lobby, side: THREE.DoubleSide }))
+  mesh(buf.dark, new THREE.MeshLambertMaterial({ color: 0x3d434b, side: THREE.DoubleSide }))
+  mesh(buf.frame, new THREE.MeshLambertMaterial({ color: hex(fa?.frame, 0xd8d2c8), side: THREE.DoubleSide }))
+  mesh(buf.roof, new THREE.MeshLambertMaterial({ color: 0xc9c4bb, side: THREE.DoubleSide }))
+  mesh(buf.plant, new THREE.MeshLambertMaterial({ color: 0xa9a49c, side: THREE.DoubleSide }))
+  mesh(buf.glass, new THREE.MeshPhongMaterial({ color: hex(fa?.glass, mainUse === 'office' ? 0x6f97b8 : 0x86a9c2), specular: 0xbfd4e6, shininess: 70, side: THREE.DoubleSide }))
+  mesh(buf.rail, new THREE.MeshBasicMaterial({ color: 0xcfe3ef, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false }))
+  const lines = (arr: number[], color: number, opacity: number) => {
+    if (!arr.length) return
+    const lg = new THREE.BufferGeometry()
+    lg.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3))
+    g.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color, transparent: true, opacity })))
   }
+  lines(buf.mull, hex(fa?.frame, 0x6b655d).getHex(), 0.55)
+  lines(buf.lines, 0x4a433b, 0.6)
   return g
 }
 

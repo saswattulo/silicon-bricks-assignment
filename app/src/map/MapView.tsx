@@ -73,6 +73,11 @@ export default function MapView(p: Props) {
     ;(window as unknown as { __map?: maplibregl.Map }).__map = map
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right')
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
+    // The basemap asks for a few POI icons its sprite doesn't have; give them a blank image
+    // instead of a console warning each.
+    map.setMissingStyleImageResolver((id) => {
+      if (!map.hasImage(id)) map.addImage(id, { width: 1, height: 1, data: new Uint8Array(4) })
+    })
 
     // style.load fires once the style is parsed, without waiting for every tile, so the
     // plot and massing appear immediately even on a slow connection.

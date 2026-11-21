@@ -62,7 +62,22 @@ export interface Design {
   twist: number // degrees the top floor turns vs the bottom
   trim: boolean // cut each floor back to the legal envelope
   outline?: Pt[] // shape 'custom': outline in unit box (-0.5..0.5), y up, from a picture
+  facade?: Facade
 }
+
+/** How the building looks. Only roof steps change the floor plates; the rest is appearance. */
+export interface Facade {
+  wall: string // #rrggbb
+  glass: string
+  frame: string // slab edges, mullions
+  glazing: number // share of each storey that is window, 10-90 %
+  podiumGlass: boolean // glazed podium / lobby
+  balconies: boolean // recessed balconies on home and hotel floors
+  roofSteps: number // top floors stepped back, 0-4
+  roofStepM: number // m each step goes back
+}
+
+export const DEFAULT_FACADE: Facade = { wall: '#f2eee6', glass: '#86a9c2', frame: '#8a8279', glazing: 45, podiumGlass: true, balconies: true, roofSteps: 0, roofStepM: 2 }
 
 export const DEFAULT_DESIGN: Design = {
   shape: 'circle',
@@ -326,6 +341,7 @@ export interface Concept {
   parkingProvided: number
   checks: Check[]
   infeasible?: string
+  facade?: Facade // set for the user's design; other concepts use defaults by use
 }
 
 export interface Check {
@@ -1037,7 +1053,15 @@ export function designConcept(inp: Inputs, L: Limits, d: Design, env: { low: Env
     const f = towerN > 1 ? k / (towerN - 1) : 0
     const sc = 1 - taper * f
     const a = (clampN(d.rotation, -360, 360) * Math.PI) / 180 + twist * f
-    return [[base.map((p) => toWorld(rot([p[0] * sc, p[1] * sc], a)))]]
+    const plate: MultiPoly = [[base.map((p) => toWorld(rot([p[0] * sc, p[1] * sc], a)))]]
+    // stepped roof: the top floors step back, one step per floor
+    const steps = Math.round(clampN(d.facade?.roofSteps ?? 0, 0, 4))
+    const fromTop = towerN - 1 - k
+    if (steps && fromTop < steps && towerN > steps) {
+      const inset = insetMP(plate, clampN(d.facade?.roofStepM ?? 2, 0.5, 6) * (steps - fromTop))
+      return inset.length ? inset : plate
+    }
+    return plate
   }
 
   const build = (cls: BuildingClass): Floor[] => {
@@ -1079,6 +1103,7 @@ export function designConcept(inp: Inputs, L: Limits, d: Design, env: { low: Env
     blocks: [{ name: 'Your design', floors }],
     surfaceParking: cls === 'low',
   })
+  if (d.facade) c.facade = d.facade
   if (!floors.length) c.infeasible = d.trim ? 'Nothing is left after trimming to the envelope. Move or shrink the shape.' : 'The design has no floors.'
   return c
 }

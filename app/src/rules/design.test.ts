@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { analyse, DEFAULT_DESIGN, type Design } from './engine'
+import { analyse, DEFAULT_DESIGN, DEFAULT_FACADE, type Design } from './engine'
 
 const plot = [[0, 0], [62, 0], [62, 50], [30, 50]] as [number, number][]
 const run = (d: Partial<Design>) =>
@@ -28,5 +28,17 @@ describe('your design', () => {
     const c = run({ shape: 'rect', width: 30, depth: 20, taper: 40, twist: 90, podiumFloors: 0 })
     const fl = c.blocks[0].floors
     expect(fl[fl.length - 1].area / fl[0].area).toBeCloseTo(0.36, 1)
+  })
+})
+
+describe('stepped roof', () => {
+  it('steps the top floors back and keeps the rest', () => {
+    const base = { shape: 'rect' as const, width: 24, depth: 18 }
+    const flat = run(base).blocks[0].floors
+    const stepped = run({ ...base, facade: { ...DEFAULT_FACADE, roofSteps: 2, roofStepM: 2 } }).blocks[0].floors
+    expect(stepped.length).toBe(flat.length)
+    expect(stepped.at(-1)!.area).toBeLessThan(stepped.at(-2)!.area)
+    expect(stepped.at(-2)!.area).toBeLessThan(stepped.at(-3)!.area)
+    expect(stepped.at(-3)!.area).toBeCloseTo(flat.at(-3)!.area, 3)
   })
 })

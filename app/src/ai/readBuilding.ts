@@ -6,6 +6,9 @@
 import { z } from 'zod'
 import type { Design } from '../rules/engine'
 
+// Same as DEFAULT_FACADE in the engine; copied so this server file has no runtime imports of app code.
+const DEFAULT_FACADE = { wall: '#f2eee6', glass: '#86a9c2', frame: '#8a8279' }
+
 // Sonnet reads a building photo well and answers in seconds; Opus with deep thinking could outlast the function.
 export const DEFAULT_MODEL = 'anthropic/claude-sonnet-5.5'
 const ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions'
@@ -22,6 +25,14 @@ export const Reading = z.object({
   podium_wider: z.boolean().describe('true if the podium is clearly wider than the tower above it'),
   taper_pct: z.number().describe('how much smaller the top floor is than the bottom tower floor, in percent, 0 if straight'),
   twist_deg: z.number().describe('how far the top floor turns relative to the bottom, in degrees, 0 if none'),
+  wall_colour: z.string().describe('main solid facade colour as #rrggbb'),
+  glass_colour: z.string().describe('window glass colour as #rrggbb'),
+  frame_colour: z.string().describe('slab edge / window frame colour as #rrggbb'),
+  glazing_pct: z.number().describe('share of each storey height that is window, 10 to 90'),
+  podium_glazed: z.boolean().describe('true if the ground floor or podium is mostly glass'),
+  balconies: z.boolean().describe('true if the upper floors have balconies or loggias'),
+  roof_steps: z.number().describe('how many top floors step back to form terraces, 0 to 4'),
+  roof_step_m: z.number().describe('how far each of those steps goes back, in metres'),
   confidence: z.enum(['low', 'medium', 'high']),
   notes: z.array(z.string()).describe('2 to 4 short sentences for the user: what you saw and what you had to guess'),
 })
@@ -32,7 +43,8 @@ From one photo, render, plan or sketch, estimate the simple massing: footprint s
 storeys, a podium if any, taper and twist. Use cues such as window rows, doors (about 2.1 m), cars,
 people and typical Bangkok storey heights (3-3.5 m homes and condos, 4 m offices) to estimate scale.
 If the footprint is not visible (a straight-on photo), infer the most likely plan shape and a depth
-from the visible side and say so in the notes. Notes are plain sentences for a non-expert.`
+from the visible side and say so in the notes. Also read the look: wall, glass and frame colours,
+how much of each storey is window, a glass podium, balconies, and top floors that step back. Notes are plain sentences for a non-expert.`
 
 export interface ReadRequest {
   image: string // base64, no data: prefix
@@ -71,7 +83,22 @@ export function toDraft(r: Reading, widthHint?: number): Partial<Design> {
     taper: Math.round(clamp(r.taper_pct, 0, 60)),
     twist: Math.round(clamp(r.twist_deg, -120, 120) / 5) * 5,
     outline: undefined,
+    facade: {
+      wall: colour(r.wall_colour, DEFAULT_FACADE.wall),
+      glass: colour(r.glass_colour, DEFAULT_FACADE.glass),
+      frame: colour(r.frame_colour, DEFAULT_FACADE.frame),
+      glazing: Math.round(clamp(r.glazing_pct, 10, 90)),
+      podiumGlass: r.podium_glazed,
+      balconies: r.balconies,
+      roofSteps: Math.round(clamp(r.roof_steps, 0, 4)),
+      roofStepM: half(clamp(r.roof_step_m, 1, 6)),
+    },
   }
+}
+
+const colour = (s: string, fb: string) => {
+  const m = /#?([0-9a-f]{6})\b/i.exec(s ?? '')
+  return m ? `#${m[1].toLowerCase()}` : fb
 }
 
 export class ReadError extends Error {

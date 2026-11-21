@@ -4,6 +4,8 @@ import { readBuilding, toDraft, validate, type Reading } from './readBuilding'
 const base: Reading = {
   is_building: true, view: 'perspective', shape: 'circle', width_m: 30, depth_m: 28,
   tower_floors: 22, podium_floors: 4, podium_wider: true, taper_pct: 10, twist_deg: 13,
+  wall_colour: '#F0F0EB', glass_colour: 'blue-ish #5a7d9a', frame_colour: 'grey', glazing_pct: 120,
+  podium_glazed: true, balconies: true, roof_steps: 2, roof_step_m: 2.5,
   confidence: 'medium', notes: ['Round glass tower on a wide base.'],
 }
 const fake = (content: string | null, status = 200, refusal: string | null = null) => {
@@ -17,6 +19,9 @@ describe('AI picture reading', () => {
   it('maps a reading to editor fields within slider ranges', () => {
     const d = toDraft({ ...base, tower_floors: 140, taper_pct: 90, width_m: 3 })
     expect(d).toMatchObject({ shape: 'circle', width: 6, depth: 6, towerFloors: 80, podiumFloors: 4, podiumFill: true, taper: 60, twist: 15 })
+  })
+  it('reads the look into a facade, with safe colours', () => {
+    expect(toDraft(base).facade).toEqual({ wall: '#f0f0eb', glass: '#5a7d9a', frame: '#8a8279', glazing: 90, podiumGlass: true, balconies: true, roofSteps: 2, roofStepM: 2.5 })
   })
   it('rescales to the width the user gives', () => {
     expect(toDraft({ ...base, shape: 'rect', width_m: 20, depth_m: 10 }, 40)).toMatchObject({ width: 40, depth: 20 })

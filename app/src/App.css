@@ -172,3 +172,7 @@ footer { padding-top: 14px; line-height: 1.5; }
 .sgrid button:hover { border-color: var(--ink); }
 .sgrid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 5px; background: #f3efe8; }
 .sgrid em { position: absolute; top: 7px; right: 7px; font-style: normal; font-size: 10px; background: rgba(255,255,255,.9); border-radius: 4px; padding: 0 4px; }
+.look { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #ece6dc; padding-top: 8px; }
+.swatches { display: flex; gap: 10px; }
+.swatch { display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+.swatch input { width: 28px; height: 22px; padding: 0; border: 1px solid #d6cfc4; border-radius: 5px; background: none; cursor: pointer; }

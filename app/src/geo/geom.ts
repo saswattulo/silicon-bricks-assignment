@@ -194,6 +194,16 @@ export function insetMP(mp: MultiPoly, d: number): MultiPoly {
   return clean(fromTree(tree))
 }
 
+/** Uniform outset (grow) of a multipolygon by d, mitred corners. */
+export function outsetMP(mp: MultiPoly, d: number): MultiPoly {
+  if (d <= 0 || !mp.length) return mp
+  const co = new ClipperLib.ClipperOffset(2, 0.25 * SCALE)
+  co.AddPaths(toPaths(mp), ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon)
+  const tree = new ClipperLib.PolyTree()
+  co.Execute(tree, d * SCALE)
+  return clean(fromTree(tree))
+}
+
 /** Keep the part of mp where signedDistToLine(p, a, b) >= minD (half-plane clip). */
 export function clipHalfPlane(mp: MultiPoly, a: Pt, b: Pt, minD: number, big = 1e5): MultiPoly {
   if (!mp.length) return []

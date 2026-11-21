@@ -1,5 +1,5 @@
 import { useEffect, useState, type DragEvent } from 'react'
-import type { Design, DesignShape } from '../rules/engine'
+import { DEFAULT_FACADE, type Design, type DesignShape, type Facade } from '../rules/engine'
 import { readPlan, readSide, type Pixels, type Reading } from './imageToDesign'
 
 interface Props {
@@ -107,6 +107,8 @@ function preview(url: string, r: Reading): Promise<string> {
 
 export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
   const set = (patch: Partial<Design>) => setDesign({ ...d, ...patch })
+  const fa = d.facade ?? DEFAULT_FACADE
+  const setFa = (patch: Partial<Facade>) => set({ facade: { ...fa, ...patch } })
   const [pic, setPic] = useState<{ sample: (typeof SAMPLES)[number]; url: string; px: Pixels } | null>(null)
   const [gallery, setGallery] = useState(false)
   const [mode, setMode] = useState<'plan' | 'side'>('plan')
@@ -348,6 +350,35 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
         <input type="checkbox" checked={d.podiumFill} disabled={!d.podiumFloors} onChange={(e) => set({ podiumFill: e.target.checked })} />
         Podium fills the buildable area (otherwise it follows the tower shape)
       </label>
+      <div className="look">
+        <b className="small">Look</b>
+        <div className="swatches">
+          {(
+            [
+              ['wall', 'Walls'],
+              ['glass', 'Glass'],
+              ['frame', 'Frames'],
+            ] as const
+          ).map(([k, label]) => (
+            <label key={k} className="swatch">
+              <input type="color" value={fa[k]} onChange={(e) => setFa({ [k]: e.target.value })} />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
+        <div className="dgrid">
+          <Slider label="Windows" unit="%" value={fa.glazing} min={10} max={90} step={5} onChange={(v) => setFa({ glazing: v })} />
+          <Slider label="Stepped roof floors" value={fa.roofSteps} min={0} max={4} onChange={(v) => setFa({ roofSteps: v })} />
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={fa.balconies} onChange={(e) => setFa({ balconies: e.target.checked })} />
+          Balconies on home and hotel floors
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={fa.podiumGlass} onChange={(e) => setFa({ podiumGlass: e.target.checked })} />
+          Glass lobby and podium
+        </label>
+      </div>
       <label className="check">
         <input type="checkbox" checked={d.trim} onChange={(e) => set({ trim: e.target.checked })} />
         Trim every floor to the legal envelope
