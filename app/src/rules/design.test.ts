@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { analyse, DEFAULT_DESIGN, DEFAULT_FACADE, type Design } from './engine'
+import { analyse, DEFAULT_DESIGN, DEFAULT_FACADE, shapePoly, type Design } from './engine'
+import { polyArea } from '../geo/geom'
 
 const plot = [[0, 0], [62, 0], [62, 50], [30, 50]] as [number, number][]
 const run = (d: Partial<Design>) =>
@@ -80,5 +81,19 @@ describe('polygons and courtyards', () => {
     expect(tower[0].plate[0].length).toBe(2)
     expect(tower[4].plate[0][0].length).toBe(8)
     expect(tower[8].area).toBeCloseTo(72, 0)
+  })
+})
+
+describe('drawn inner shapes', () => {
+  it('cuts a drawn hole out of the plate', () => {
+    const sq: [number, number][] = [[-0.25, -0.25], [0.25, -0.25], [0.25, 0.25], [-0.25, 0.25]]
+    const rings = shapePoly('rect', 20, 20, { hole: sq })
+    expect(rings.length).toBe(2)
+    expect(polyArea(rings)).toBeCloseTo(300, 0)
+  })
+  it('keeps only the part inside the outline when the hole spills over', () => {
+    const big: [number, number][] = [[0, -1], [1, -1], [1, 1], [0, 1]]
+    const rings = shapePoly('rect', 20, 10, { hole: big })
+    expect(polyArea(rings)).toBeCloseTo(100, 0)
   })
 })

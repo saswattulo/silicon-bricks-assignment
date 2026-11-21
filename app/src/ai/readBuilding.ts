@@ -72,7 +72,10 @@ or has wings of different heights, list those parts as tiers from bottom to top 
 size and offset, so the tiers' floors add up to tower_floors. Also give the roof form and the
 window pattern.
 Get the plan shape right; it matters more than anything else:
-- round or cylindrical towers are circle (oval ones ellipse), never rect;
+- round or cylindrical towers are circle (oval ones ellipse), never rect. Look for the signs in a
+  photo taken from the side: floor lines and window rows that bend into curves, shading that fades
+  smoothly across the facade instead of changing at a corner, and no vertical corner edge anywhere.
+  If you see these, the shape is circle even when only one face is visible;
 - a regular plan with N equal sides is polygon with sides N (the Pentagon in Washington is polygon, 5 sides);
 - a building wrapped around an open courtyard (a ring, a hollow square, the Pentagon) gets courtyard_pct;
 - an irregular plan (curved, cross, T, U, Y, wedge) is custom with an outline traced from the image;

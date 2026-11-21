@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import type * as maplibregl from 'maplibre-gl'
 import MapView, { type Basemap, type EnvelopeMode, type Mode, type View } from './map/MapView'
 import { bangkokDate, shadowVector, sunPosition } from './geo/sun'
@@ -56,6 +56,26 @@ export default function App() {
   })
   const [deed, setDeed] = useState<Deed>(sh?.deed ? { ...EMPTY_DEED, ...sh.deed } : EMPTY_DEED)
   const [busy, setBusy] = useState('')
+  const [theme, setThemeRaw] = useState<'light' | 'dark'>(() => {
+    try {
+      const t = localStorage.getItem('plot-envelope.theme.v1')
+      if (t === 'light' || t === 'dark') return t
+    } catch {
+      /* ignore */
+    }
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  })
+  const setTheme = (t: 'light' | 'dark') => {
+    setThemeRaw(t)
+    try {
+      localStorage.setItem('plot-envelope.theme.v1', t)
+    } catch {
+      /* ignore */
+    }
+  }
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+  }, [theme])
   const [toast, setToast] = useState<{ text: string; link?: string } | null>(null)
   const setCustoms = useCallback((c: CustomBuilding[]) => {
     setCustomsRaw(c)
@@ -298,6 +318,7 @@ export default function App() {
           sun={shadowsOn ? sun : null}
           showContext={showContext}
           view={view}
+          dark={theme === 'dark'}
           onPlotChange={onPlotChange}
           onModeChange={setMode}
           onEdgeClick={toggleRoad}
@@ -306,6 +327,9 @@ export default function App() {
             if (sh) m.jumpTo({ center: centroidLL(sh.plot) })
           }}
         />
+        <button className="overlay top-left themebtn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
+            {theme === 'dark' ? '☀' : '☾'}
+          </button>
         <div className="overlay top-right">
           <div className="seg">
             {(['auto', 'low', 'high', 'both', 'off'] as EnvelopeMode[]).map((m) => (

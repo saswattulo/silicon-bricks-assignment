@@ -17,6 +17,7 @@ import { FAR_TABLE } from '../rules/zones'
 import type { CustomBuilding } from '../rules/systems'
 import BuildingSystem from './BuildingSystem'
 import DesignEditor from './DesignEditor'
+import Builder from './Builder'
 import DeedInput from './DeedInput'
 import type { Deed } from '../rules/deed'
 import type { Mode } from '../map/MapView'
@@ -82,7 +83,14 @@ export default function Panel(p: Props) {
       return 'plot'
     }
   })
+  const [building, setBuilding] = useState(false)
+  const openBuilder = () => {
+    p.setConceptId('design')
+    setBuilding(true)
+    document.querySelector('.panel')?.scrollTo({ top: 0 })
+  }
   const setTab = (t: Tab) => {
+    setBuilding(false)
     setTabRaw(t)
     try {
       localStorage.setItem(TAB_KEY, t)
@@ -142,7 +150,11 @@ export default function Panel(p: Props) {
         </nav>
       </header>
 
-      {tab === 'plot' && (
+      {building && (
+        <Builder design={p.design} setDesign={p.setDesign} floorH={p.system.typH} concept={a?.concepts.find((c) => c.id === 'design')} onClose={() => setBuilding(false)} />
+      )}
+
+      {!building && tab === 'plot' && (
         <>
           <section>
             <h2>Your plot</h2>
@@ -235,7 +247,7 @@ export default function Panel(p: Props) {
         </>
       )}
 
-      {tab === 'building' && (
+      {!building && tab === 'building' && (
         <section>
           <h2>What you want to build</h2>
           <div className="seg wide">
@@ -272,7 +284,7 @@ export default function Panel(p: Props) {
       {a?.error && <div className="error">{a.error}</div>}
       {!a && <div className="error">This plot shape could not be analysed. Try moving a corner.</div>}
 
-      {tab === 'rules' && a && L && !a.error && (
+      {!building && tab === 'rules' && a && L && !a.error && (
         <section>
           <h2>What the rules allow</h2>
           <div className="bigstat">
@@ -336,7 +348,7 @@ export default function Panel(p: Props) {
         </section>
       )}
 
-      {tab === 'designs' && a && L && !a.error && (
+      {!building && tab === 'designs' && a && L && !a.error && (
         <section>
           <h2>Pick a design {p.stale && <span className="muted small">updating…</span>}</h2>
           <div className="concepts">
@@ -344,7 +356,13 @@ export default function Panel(p: Props) {
               <ConceptCard key={c.id} c={c} plotArea={p.plotArea} active={c.id === p.conceptId} onClick={() => p.setConceptId(c.id)} type={p.type} />
             ))}
           </div>
-          {p.conceptId === 'design' && <DesignEditor design={p.design} setDesign={p.setDesign} floorH={p.system.typH} />}
+          {p.conceptId !== 'design' && (
+            <button className="buildcta" onClick={openBuilder}>
+              <b>+ Build your own from scratch</b>
+              <span className="muted small">Draw the floor plan, cut a courtyard, stack the floors.</span>
+            </button>
+          )}
+          {p.conceptId === 'design' && <DesignEditor design={p.design} setDesign={p.setDesign} floorH={p.system.typH} onBuild={openBuilder} />}
           {a.concepts
             .filter((c) => c.id === p.conceptId)
             .map((c) => (

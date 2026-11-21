@@ -32,10 +32,40 @@ interface Props {
   sun: Sun | null // null = shadows off
   showContext: boolean
   view: View
+  dark: boolean
   onPlotChange: (ll: [number, number][], fromDraw: boolean) => void
   onModeChange: (m: Mode) => void
   onEdgeClick: (i: number) => void
   onMapReady: (map: maplibregl.Map) => void
+}
+
+/** Dark basemap: a constant colour per layer, picked from what the layer draws. */
+function darkPaint(type: string, prop: string, id: string): string | null {
+  const has = (...w: string[]) => w.some((k) => id.includes(k))
+  if (type === 'background') return '#14171c'
+  if (type === 'fill-extrusion') return '#353b44'
+  if (type === 'fill') {
+    if (has('water', 'ocean', 'river')) return '#0e1d2b'
+    if (has('park', 'grass', 'wood', 'forest', 'green', 'cemetery', 'pitch', 'golf', 'landcover', 'scrub')) return '#16211a'
+    if (has('building')) return '#23272e'
+    return '#191d23'
+  }
+  if (type === 'line') {
+    if (has('water', 'river', 'canal', 'stream')) return '#12324a'
+    if (has('casing')) return '#0f1216'
+    if (has('boundary', 'admin')) return '#4b5563'
+    if (has('motorway', 'trunk', 'primary')) return '#5a4a36'
+    return '#2d333c'
+  }
+  if (type === 'symbol') return prop === 'text-color' ? '#cbd5e1' : '#0f1216'
+  return null
+}
+const THEMED: Record<string, string[]> = {
+  background: ['background-color'],
+  fill: ['fill-color'],
+  line: ['line-color'],
+  symbol: ['text-color', 'text-halo-color'],
+  'fill-extrusion': ['fill-extrusion-color'],
 }
 
 function mpToGeo(mp: MultiPoly, frame: LocalFrame) {
@@ -51,6 +81,16 @@ export default function MapView(p: Props) {
   const props = useRef(p)
   props.current = p
   const bldLayers = useRef<{ id: string; filter: unknown }[]>([])
+  const themeOrig = useRef<{ id: string; prop: string; light: unknown; dark: string }[]>([])
+  const applyTheme = (map: maplibregl.Map, dark: boolean) => {
+    for (const t of themeOrig.current) {
+      try {
+        map.setPaintProperty(t.id, t.prop as never, (dark ? t.dark : t.light) as never)
+      } catch {
+        /* a layer without this property */
+      }
+    }
+  }
   // Context buildings already hidden for the current plot. Only grows while the plot is
   // unchanged: once hidden, a building no longer shows up in queries, so recomputing from
   // scratch would un-hide it and loop forever.
@@ -89,6 +129,12 @@ export default function MapView(p: Props) {
           map.setPaintProperty(l.id, 'fill-extrusion-color', '#d9d6d0')
           map.setPaintProperty(l.id, 'fill-extrusion-opacity', 0.92)
           bldLayers.current.push({ id: l.id, filter: map.getFilter(l.id) })
+        }
+      }
+      for (const l of style.layers) {
+        for (const prop of THEMED[l.type] ?? []) {
+          const dark = darkPaint(l.type, prop, l.id)
+          if (dark) themeOrig.current.push({ id: l.id, prop, light: map.getPaintProperty(l.id, prop as never), dark })
         }
       }
       const firstSymbol = style.layers.find((l) => l.type === 'symbol')?.id
@@ -206,6 +252,7 @@ export default function MapView(p: Props) {
       })
       drawRef.current = draw
       readyRef.current = true
+      if (props.current.dark) applyTheme(map, true)
       props.current.onMapReady(map)
       syncAll()
     })
@@ -388,6 +435,13 @@ export default function MapView(p: Props) {
     syncContextShadows()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.sun, p.showContext])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !readyRef.current) return
+    applyTheme(map, p.dark)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.dark])
 
   // Surrounding buildings on/off (the plot's own context is always hidden).
   useEffect(() => {

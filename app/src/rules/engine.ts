@@ -14,6 +14,7 @@ import {
   ensureCCW,
   distToSegment,
   dist,
+  difference,
   insetByEdges,
   insetMP,
   intersection,
@@ -65,6 +66,7 @@ export interface Design {
   facade?: Facade
   tiers?: Tier[] // tower as stacked tiers, bottom to top; replaces the single tower shape when set
   sides?: number // shape 'polygon': number of sides, 3-12
+  hole?: Pt[] // drawn inner shape in the unit box (-0.5..0.5) of width x depth
   courtyard?: number // open courtyard in the middle, as a share of the outer size, 0-0.8
 }
 
@@ -75,6 +77,7 @@ export interface Tier {
   sides?: number
   courtyard?: number
   outline?: Pt[] // shape 'custom': unit-box outline
+  hole?: Pt[] // drawn inner shape (courtyard / atrium) in the same unit box
   width: number
   depth: number
   dx: number // m along the road from the tower centre
@@ -153,8 +156,15 @@ export function shapeRing(shape: DesignShape, w: number, d: number, outline?: Pt
 }
 
 /** Footprint with an optional courtyard: the same shape scaled down and cut out of the middle. */
-export function shapePoly(shape: DesignShape, w: number, d: number, opts: { outline?: Pt[]; sides?: number; courtyard?: number } = {}): Pt[][] {
+export function shapePoly(shape: DesignShape, w: number, d: number, opts: { outline?: Pt[]; sides?: number; courtyard?: number; hole?: Pt[] } = {}): Pt[][] {
   const outer = ensureCCW(shapeRing(shape, w, d, opts.outline, opts.sides))
+  if (opts.hole && opts.hole.length >= 3) {
+    // a drawn inner shape: cut it out, keeping only the part inside the outline
+    const inner = ensureCCW(opts.hole.map(([x, y]) => [x * w, y * d] as Pt))
+    const cut = difference([[outer]], [[inner]])
+    if (cut.length) return cut.reduce((best: Pt[][], p: Pt[][]) => (polyArea(p) > polyArea(best) ? p : best))
+    return [outer]
+  }
   const k = Math.min(0.8, Math.max(0, opts.courtyard ?? 0))
   if (k < 0.08) return [outer]
   return [outer, outer.map(([x, y]) => [x * k, y * k] as Pt).reverse()]
@@ -1088,7 +1098,7 @@ export function designConcept(inp: Inputs, L: Limits, d: Design, env: { low: Env
     const q = rot([p[0] + clampN(d.offsetX, -200, 200), p[1] + clampN(d.offsetY, -200, 200)], theta)
     return [anchor[0] + q[0], anchor[1] + q[1]]
   }
-  const base = shapePoly(d.shape, w, dep, { outline: d.outline, sides: d.sides, courtyard: d.courtyard })
+  const base = shapePoly(d.shape, w, dep, { outline: d.outline, sides: d.sides, courtyard: d.courtyard, hole: d.hole })
   const towerPlate = (k: number): MultiPoly => {
     const f = towerN > 1 ? k / (towerN - 1) : 0
     const sc = 1 - taper * f
@@ -1099,7 +1109,7 @@ export function designConcept(inp: Inputs, L: Limits, d: Design, env: { low: Env
       const t = tiers.find((x) => (left < x.floors ? true : ((left -= x.floors), false))) ?? tiers[tiers.length - 1]
       const tw = clampN(t.width, 4, 200)
       const shift = (p: Pt): Pt => [p[0] + clampN(t.dx, -100, 100), p[1] + clampN(t.dy, -100, 100)]
-      rings = shapePoly(t.shape, tw, t.shape === 'circle' ? tw : clampN(t.depth, 4, 200), { outline: t.outline, sides: t.sides, courtyard: t.courtyard }).map((r) => r.map(shift))
+      rings = shapePoly(t.shape, tw, t.shape === 'circle' ? tw : clampN(t.depth, 4, 200), { outline: t.outline, sides: t.sides, courtyard: t.courtyard, hole: t.hole }).map((r) => r.map(shift))
     }
     const plate: MultiPoly = [rings.map((r) => r.map((p) => toWorld(rot([p[0] * sc, p[1] * sc], a))))]
     // stepped roof: the top floors step back, one step per floor
