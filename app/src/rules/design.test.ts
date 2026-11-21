@@ -56,3 +56,29 @@ describe('tiers', () => {
     expect(c.name).toContain('stepped')
   })
 })
+
+describe('polygons and courtyards', () => {
+  it('builds a pentagon with a courtyard and checks it like any plate', () => {
+    const solid = run({ shape: 'polygon', sides: 5, width: 40, depth: 38, towerFloors: 5, podiumFloors: 0 })
+    const ring = run({ shape: 'polygon', sides: 5, width: 40, depth: 38, towerFloors: 5, podiumFloors: 0, courtyard: 0.5 })
+    const a0 = solid.blocks[0].floors[0].area
+    const a1 = ring.blocks[0].floors[0].area
+    expect(ring.blocks[0].floors[0].plate[0].length).toBe(2) // outer + courtyard
+    expect(a1 / a0).toBeCloseTo(0.75, 2)
+    expect(solid.blocks[0].floors[0].plate[0][0].length).toBe(5)
+    expect(ring.name).toContain('polygonal')
+    expect(ring.checks.length).toBeGreaterThan(5)
+  })
+  it('lets a tier be round, polygonal or traced', () => {
+    const c = run({ tiers: [
+      { floors: 4, shape: 'circle', width: 30, depth: 30, dx: 0, dy: 0, courtyard: 0.4 },
+      { floors: 3, shape: 'polygon', sides: 8, width: 20, depth: 20, dx: 0, dy: 0 },
+      { floors: 2, shape: 'custom', width: 12, depth: 12, dx: 0, dy: 0, outline: [[-0.5, -0.5], [0.5, -0.5], [0, 0.5]] },
+    ] })
+    const fl = c.blocks[0].floors
+    const tower = fl.slice(-9)
+    expect(tower[0].plate[0].length).toBe(2)
+    expect(tower[4].plate[0][0].length).toBe(8)
+    expect(tower[8].area).toBeCloseTo(72, 0)
+  })
+})

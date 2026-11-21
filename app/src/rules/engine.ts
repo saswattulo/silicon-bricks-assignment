@@ -45,7 +45,7 @@ export interface Inputs {
   design?: Design // the user's own massing, shown as a third concept
 }
 
-export type DesignShape = 'rect' | 'circle' | 'ellipse' | 'L' | 'hexagon' | 'octagon' | 'triangle' | 'custom'
+export type DesignShape = 'rect' | 'circle' | 'ellipse' | 'L' | 'hexagon' | 'octagon' | 'triangle' | 'polygon' | 'custom'
 
 /** A massing the user shapes: a tower of any of the shapes above, optionally on a podium. */
 export interface Design {
@@ -64,12 +64,17 @@ export interface Design {
   outline?: Pt[] // shape 'custom': outline in unit box (-0.5..0.5), y up, from a picture
   facade?: Facade
   tiers?: Tier[] // tower as stacked tiers, bottom to top; replaces the single tower shape when set
+  sides?: number // shape 'polygon': number of sides, 3-12
+  courtyard?: number // open courtyard in the middle, as a share of the outer size, 0-0.8
 }
 
 /** One part of a stepped tower: a run of identical floors, offset from the tower's centre. */
 export interface Tier {
   floors: number
-  shape: Exclude<DesignShape, 'custom'>
+  shape: DesignShape
+  sides?: number
+  courtyard?: number
+  outline?: Pt[] // shape 'custom': unit-box outline
   width: number
   depth: number
   dx: number // m along the road from the tower centre
@@ -108,8 +113,20 @@ export const DEFAULT_DESIGN: Design = {
 }
 
 /** Outline of a shape centred on the origin, w along x and d along y. Counter-clockwise. */
-export function shapeRing(shape: DesignShape, w: number, d: number, outline?: Pt[]): Ring {
+export function shapeRing(shape: DesignShape, w: number, d: number, outline?: Pt[], sides = 5): Ring {
   if (shape === 'custom' && outline && outline.length >= 3) return ensureCCW(outline.map(([x, y]) => [x * w, y * d] as Pt))
+  if (shape === 'polygon') {
+    // regular N-gon with a flat side facing the road, stretched to fill w x d
+    const n = Math.round(Math.min(12, Math.max(3, sides)))
+    const pts: Pt[] = Array.from({ length: n }, (_, i) => {
+      const a = -Math.PI / 2 + Math.PI / n + (2 * Math.PI * i) / n
+      return [Math.cos(a), Math.sin(a)] as Pt
+    })
+    const xs = pts.map((p) => p[0])
+    const ys = pts.map((p) => p[1])
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
+    return pts.map(([x, y]) => [((x - x0) / (x1 - x0) - 0.5) * w, ((y - y0) / (y1 - y0) - 0.5) * d] as Pt)
+  }
   const reg = (n: number, a0: number, rx: number, ry: number): Ring =>
     Array.from({ length: n }, (_, i) => {
       const a = a0 + (2 * Math.PI * i) / n
@@ -133,6 +150,14 @@ export function shapeRing(shape: DesignShape, w: number, d: number, outline?: Pt
     default:
       return [[-w / 2, -d / 2], [w / 2, -d / 2], [w / 2, d / 2], [-w / 2, d / 2]]
   }
+}
+
+/** Footprint with an optional courtyard: the same shape scaled down and cut out of the middle. */
+export function shapePoly(shape: DesignShape, w: number, d: number, opts: { outline?: Pt[]; sides?: number; courtyard?: number } = {}): Pt[][] {
+  const outer = ensureCCW(shapeRing(shape, w, d, opts.outline, opts.sides))
+  const k = Math.min(0.8, Math.max(0, opts.courtyard ?? 0))
+  if (k < 0.08) return [outer]
+  return [outer, outer.map(([x, y]) => [x * k, y * k] as Pt).reverse()]
 }
 
 /** How the building is built: storey heights, plate size, grid and efficiency. The use (condo,
@@ -1027,6 +1052,7 @@ const SHAPE_NAMES: Record<DesignShape, string> = {
   hexagon: 'hexagonal',
   octagon: 'octagonal',
   triangle: 'triangular',
+  polygon: 'polygonal',
   custom: 'traced',
 }
 
@@ -1062,19 +1088,20 @@ export function designConcept(inp: Inputs, L: Limits, d: Design, env: { low: Env
     const q = rot([p[0] + clampN(d.offsetX, -200, 200), p[1] + clampN(d.offsetY, -200, 200)], theta)
     return [anchor[0] + q[0], anchor[1] + q[1]]
   }
-  const base = shapeRing(d.shape, w, dep, d.outline)
+  const base = shapePoly(d.shape, w, dep, { outline: d.outline, sides: d.sides, courtyard: d.courtyard })
   const towerPlate = (k: number): MultiPoly => {
     const f = towerN > 1 ? k / (towerN - 1) : 0
     const sc = 1 - taper * f
     const a = (clampN(d.rotation, -360, 360) * Math.PI) / 180 + twist * f
-    let ring = base
+    let rings = base
     if (tiers.length) {
       let left = k
       const t = tiers.find((x) => (left < x.floors ? true : ((left -= x.floors), false))) ?? tiers[tiers.length - 1]
       const tw = clampN(t.width, 4, 200)
-      ring = shapeRing(t.shape, tw, t.shape === 'circle' ? tw : clampN(t.depth, 4, 200)).map((p) => [p[0] + clampN(t.dx, -100, 100), p[1] + clampN(t.dy, -100, 100)] as Pt)
+      const shift = (p: Pt): Pt => [p[0] + clampN(t.dx, -100, 100), p[1] + clampN(t.dy, -100, 100)]
+      rings = shapePoly(t.shape, tw, t.shape === 'circle' ? tw : clampN(t.depth, 4, 200), { outline: t.outline, sides: t.sides, courtyard: t.courtyard }).map((r) => r.map(shift))
     }
-    const plate: MultiPoly = [[ring.map((p) => toWorld(rot([p[0] * sc, p[1] * sc], a)))]]
+    const plate: MultiPoly = [rings.map((r) => r.map((p) => toWorld(rot([p[0] * sc, p[1] * sc], a))))]
     // stepped roof: the top floors step back, one step per floor
     const steps = Math.round(clampN(d.facade?.roofSteps ?? 0, 0, 4))
     const fromTop = towerN - 1 - k

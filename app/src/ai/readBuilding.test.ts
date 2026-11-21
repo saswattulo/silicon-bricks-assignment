@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { readBuildingGemini, readBuilding, toDraft, validate, type Reading } from './readBuilding'
 
 const base: Reading = {
-  is_building: true, view: 'perspective', shape: 'circle', width_m: 30, depth_m: 28,
+  is_building: true, view: 'perspective', shape: 'circle', sides: 0, courtyard_pct: 0, outline: [], width_m: 30, depth_m: 28,
   tower_floors: 22, podium_floors: 4, podium_wider: true, taper_pct: 10, twist_deg: 13,
   wall_colour: '#F0F0EB', glass_colour: 'blue-ish #5a7d9a', frame_colour: 'grey', glazing_pct: 120,
   podium_glazed: true, balconies: true, roof_steps: 2, roof_step_m: 2.5,
@@ -50,13 +50,29 @@ describe('AI picture reading', () => {
   })
   it('keeps stepped tiers and scales them with the width hint', () => {
     const d = toDraft({ ...base, shape: 'rect', width_m: 20, tiers: [
-      { floors: 10, shape: 'rect', width_m: 20, depth_m: 16, shift_x_m: 0, shift_y_m: 0 },
-      { floors: 5, shape: 'rect', width_m: 12, depth_m: 10, shift_x_m: 2, shift_y_m: 3 },
+      { floors: 10, shape: 'rect', sides: 0, courtyard_pct: 0, outline: [], width_m: 20, depth_m: 16, shift_x_m: 0, shift_y_m: 0 },
+      { floors: 5, shape: 'rect', sides: 0, courtyard_pct: 0, outline: [], width_m: 12, depth_m: 10, shift_x_m: 2, shift_y_m: 3 },
     ] }, 40)
     expect(d.tiers).toHaveLength(2)
     expect(d.tiers![1]).toMatchObject({ floors: 5, width: 24, depth: 20, dx: 4, dy: 6 })
     expect(d.towerFloors).toBe(15)
     expect(toDraft(base).tiers).toBeUndefined()
+  })
+  it('reads a Pentagon-like plan: five sides around a courtyard', () => {
+    const d = toDraft({ ...base, shape: 'polygon', sides: 5, courtyard_pct: 45, width_m: 140, depth_m: 133, tower_floors: 5, podium_floors: 0 })
+    expect(d).toMatchObject({ shape: 'polygon', sides: 5, courtyard: 0.45, width: 140, depth: 133 })
+  })
+  it('keeps a traced outline and drops a broken one', () => {
+    const tri = [[-0.5, -0.5], [0.5, -0.5], [0, 0.5]]
+    expect(toDraft({ ...base, shape: 'custom', outline: tri }).outline).toHaveLength(3)
+    expect(toDraft({ ...base, shape: 'custom', outline: [[0, 0], [0.1, 0]] }).shape).toBe('rect')
+    expect(toDraft({ ...base, shape: 'polygon', sides: 0 }).shape).toBe('hexagon')
+  })
+  it('accepts tiers that leave out the new plan fields', async () => {
+    const reply = { ...base, tiers: [{ floors: 4, shape: 'rect', width_m: 30, depth_m: 30, shift_x_m: 0, shift_y_m: 0 }, { floors: 10, shape: 'circle', width_m: 20, depth_m: 20, shift_x_m: 0, shift_y_m: 0 }] }
+    const { opts } = fake(JSON.stringify(reply))
+    const r = await readBuilding(opts, img)
+    expect(r.draft.tiers?.[1].shape).toBe('circle')
   })
   it('rescales to the width the user gives', () => {
     expect(toDraft({ ...base, shape: 'rect', width_m: 20, depth_m: 10 }, 40)).toMatchObject({ width: 40, depth: 20 })

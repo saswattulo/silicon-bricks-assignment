@@ -16,6 +16,7 @@ const SHAPES: [Exclude<DesignShape, 'custom'>, string, string][] = [
   ['hexagon', 'Hex', 'M7 3h10l5 9-5 9H7l-5-9z'],
   ['octagon', 'Oct', 'M8 2h8l6 6v8l-6 6H8l-6-6V8z'],
   ['triangle', 'Tri', 'M12 3l10 18H2z'],
+  ['polygon', 'N-sided', 'M12 2l9.5 7-3.6 11H6.1L2.5 9z'],
 ]
 
 function Slider(p: { label: string; value: number; min: number; max: number; step?: number; unit?: string; onChange: (v: number) => void }) {
@@ -115,14 +116,15 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
   const addTier = () => {
     if (!tiers.length) {
       // split the current block: lower two thirds as is, the top third narrower
-      const shape = d.shape === 'custom' ? 'rect' : d.shape
+      const shape = d.shape === 'custom' && !d.outline ? 'rect' : d.shape
+      const extra = { sides: d.sides, courtyard: d.courtyard, outline: d.shape === 'custom' ? d.outline : undefined }
       const low = Math.max(1, Math.round(d.towerFloors * 0.65))
       const up = Math.max(1, d.towerFloors - low)
       const w = d.width
       const dp = shape === 'circle' ? d.width : d.depth
       setTiers([
-        { floors: low, shape, width: w, depth: dp, dx: 0, dy: 0 },
-        { floors: up, shape, width: Math.max(4, Math.round(w * 0.7 * 2) / 2), depth: Math.max(4, Math.round(dp * 0.7 * 2) / 2), dx: 0, dy: Math.round(dp * 0.1 * 2) / 2 },
+        { floors: low, shape, width: w, depth: dp, dx: 0, dy: 0, ...extra },
+        { floors: up, shape, ...extra, width: Math.max(4, Math.round(w * 0.7 * 2) / 2), depth: Math.max(4, Math.round(dp * 0.7 * 2) / 2), dx: 0, dy: Math.round(dp * 0.1 * 2) / 2 },
       ])
       return
     }
@@ -234,7 +236,7 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
     if (!reading?.r.ok) return
     const dr = reading.r.draft
     const hint = pic?.sample.hint ?? {}
-    setDesign({ ...d, offsetX: 0, offsetY: 0, rotation: 0, twist: 0, tiers: undefined, ...dr, ...hint, shape: dr.shape ?? hint.shape ?? (d.shape === 'custom' ? 'rect' : d.shape), trim: false })
+    setDesign({ ...d, offsetX: 0, offsetY: 0, rotation: 0, twist: 0, tiers: undefined, sides: undefined, courtyard: undefined, ...dr, ...hint, shape: dr.shape ?? hint.shape ?? (d.shape === 'custom' ? 'rect' : d.shape), trim: false })
     setPic(null)
     setReading(null)
     setGallery(false)
@@ -341,7 +343,7 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
           <summary>Shape and size</summary>
           <div className="shapes">
             {SHAPES.map(([sh, label, path]) => (
-              <button key={sh} className={d.shape === sh ? 'on' : ''} title={label} onClick={() => set({ shape: sh, depth: sh === 'circle' ? d.width : d.depth })}>
+              <button key={sh} className={d.shape === sh ? 'on' : ''} title={label} onClick={() => set({ shape: sh, depth: sh === 'circle' ? d.width : d.depth, sides: sh === 'polygon' ? (d.sides ?? 5) : d.sides })}>
                 <svg viewBox="0 0 24 24" width="20" height="20">
                   <path d={path} />
                 </svg>
@@ -358,8 +360,10 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
             )}
           </div>
           <div className="dgrid">
-            <Slider label={d.shape === 'circle' ? 'Diameter' : 'Width'} unit=" m" value={d.width} min={6} max={100} step={0.5} onChange={(v) => set({ width: v, depth: d.shape === 'circle' ? v : d.depth })} />
-            {d.shape !== 'circle' && <Slider label="Depth" unit=" m" value={d.depth} min={6} max={100} step={0.5} onChange={(v) => set({ depth: v })} />}
+            <Slider label={d.shape === 'circle' ? 'Diameter' : 'Width'} unit=" m" value={d.width} min={6} max={150} step={0.5} onChange={(v) => set({ width: v, depth: d.shape === 'circle' ? v : d.depth })} />
+            {d.shape !== 'circle' && <Slider label="Depth" unit=" m" value={d.depth} min={6} max={150} step={0.5} onChange={(v) => set({ depth: v })} />}
+            {d.shape === 'polygon' && <Slider label="Sides" value={d.sides ?? 5} min={3} max={12} onChange={(v) => set({ sides: v })} />}
+            <Slider label="Courtyard" unit="%" value={Math.round((d.courtyard ?? 0) * 100)} min={0} max={80} step={5} onChange={(v) => set({ courtyard: v ? v / 100 : undefined })} />
           </div>
         </details>
       )}
@@ -386,6 +390,7 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
                     {label}
                   </option>
                 ))}
+                {t.outline && <option value="custom">Traced</option>}
               </select>
               <button className="link" onClick={() => setTiers(tiers.filter((_, k) => k !== i))}>
                 remove
@@ -393,8 +398,10 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
             </div>
             <div className="dgrid">
               <Slider label="Floors" value={t.floors} min={1} max={60} onChange={(v) => setTier(i, { floors: v })} />
-              <Slider label={t.shape === 'circle' ? 'Diameter' : 'Width'} unit=" m" value={t.width} min={4} max={100} step={0.5} onChange={(v) => setTier(i, { width: v, depth: t.shape === 'circle' ? v : t.depth })} />
-              {t.shape !== 'circle' && <Slider label="Depth" unit=" m" value={t.depth} min={4} max={100} step={0.5} onChange={(v) => setTier(i, { depth: v })} />}
+              <Slider label={t.shape === 'circle' ? 'Diameter' : 'Width'} unit=" m" value={t.width} min={4} max={150} step={0.5} onChange={(v) => setTier(i, { width: v, depth: t.shape === 'circle' ? v : t.depth })} />
+              {t.shape !== 'circle' && <Slider label="Depth" unit=" m" value={t.depth} min={4} max={150} step={0.5} onChange={(v) => setTier(i, { depth: v })} />}
+              {t.shape === 'polygon' && <Slider label="Sides" value={t.sides ?? 5} min={3} max={12} onChange={(v) => setTier(i, { sides: v })} />}
+              <Slider label="Courtyard" unit="%" value={Math.round((t.courtyard ?? 0) * 100)} min={0} max={80} step={5} onChange={(v) => setTier(i, { courtyard: v ? v / 100 : undefined })} />
               <Slider label="Shift sideways" unit=" m" value={t.dx} min={-40} max={40} step={0.5} onChange={(v) => setTier(i, { dx: v })} />
               <Slider label="Shift back" unit=" m" value={t.dy} min={-40} max={40} step={0.5} onChange={(v) => setTier(i, { dy: v })} />
             </div>

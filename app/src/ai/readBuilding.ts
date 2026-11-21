@@ -14,10 +14,25 @@ export const DEFAULT_MODEL = 'anthropic/claude-sonnet-5.5'
 const ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions'
 export const MAX_IMAGE_BYTES = 3_000_000 // base64 length cap, ~2.2 MB of JPEG
 
+const TierZ = z.object({
+  floors: z.number().describe('storeys in this tier'),
+  shape: z.enum(['rect', 'circle', 'ellipse', 'L', 'hexagon', 'octagon', 'triangle', 'polygon', 'custom']),
+  sides: z.number().describe('sides when shape is polygon, else 0'),
+  courtyard_pct: z.number().describe('courtyard width as % of this tier width, else 0'),
+  outline: z.array(z.array(z.number())).describe('only for custom: plan corners in -0.5..0.5, else []'),
+  width_m: z.number(),
+  depth_m: z.number(),
+  shift_x_m: z.number().describe('sideways offset of this tier centre from the main tower centre, metres, + = right'),
+  shift_y_m: z.number().describe('front-back offset of this tier centre, metres, + = further back from the street'),
+})
+
 export const Reading = z.object({
   is_building: z.boolean().describe('false if the picture does not show a building, plan or massing'),
   view: z.enum(['plan', 'side', 'perspective']).describe('plan = seen from above; side = elevation or straight-on photo; perspective = angled photo or render'),
-  shape: z.enum(['rect', 'circle', 'ellipse', 'L', 'hexagon', 'octagon', 'triangle']).describe('closest footprint shape of the main tower'),
+  shape: z.enum(['rect', 'circle', 'ellipse', 'L', 'hexagon', 'octagon', 'triangle', 'polygon', 'custom']).describe('footprint of the main tower: circle for round or cylindrical, ellipse for oval, polygon for any regular N-sided plan (give sides), custom for an irregular plan (give outline)'),
+  sides: z.number().describe('number of sides when shape is polygon (5 for a pentagon), else 0'),
+  courtyard_pct: z.number().describe('if the building wraps around an open courtyard or atrium open to the sky, the courtyard width as % of the outer width (e.g. 45), else 0'),
+  outline: z.array(z.array(z.number())).describe('only for shape custom: 6 to 24 [x, y] corners of the plan, counter-clockwise, x to the right and y away from the street, scaled so the plan spans -0.5..0.5 in both; else []'),
   width_m: z.number().describe('estimated width of the main tower footprint in metres (diameter if round)'),
   depth_m: z.number().describe('estimated depth of the main tower footprint in metres'),
   tower_floors: z.number().describe('storeys above the podium, or all storeys if there is no podium'),
@@ -35,14 +50,7 @@ export const Reading = z.object({
   roof_step_m: z.number().describe('how far each of those steps goes back, in metres'),
   tiers: z
     .array(
-      z.object({
-        floors: z.number().describe('storeys in this tier'),
-        shape: z.enum(['rect', 'circle', 'ellipse', 'L', 'hexagon', 'octagon', 'triangle']),
-        width_m: z.number(),
-        depth_m: z.number(),
-        shift_x_m: z.number().describe('sideways offset of this tier centre from the main tower centre, metres, + = right'),
-        shift_y_m: z.number().describe('front-back offset of this tier centre, metres, + = further back from the street'),
-      }),
+      TierZ,
     )
     .describe('the tower above the podium as distinct stacked parts, bottom to top, when its size or position changes with height (setbacks, a narrower crown, a wing that stops lower). One entry if it is one straight block.'),
   roof: z.enum(['flat', 'gable', 'hip']).describe('roof form: flat (with parapet), gable (two slopes) or hip (four slopes)'),
@@ -62,7 +70,14 @@ how much of each storey is window, a glass podium, balconies, and top floors tha
 Describe the real form, not just a box: if the building gets narrower or moves back higher up,
 or has wings of different heights, list those parts as tiers from bottom to top with their own
 size and offset, so the tiers' floors add up to tower_floors. Also give the roof form and the
-window pattern. Notes are plain sentences for a non-expert.`
+window pattern.
+Get the plan shape right; it matters more than anything else:
+- round or cylindrical towers are circle (oval ones ellipse), never rect;
+- a regular plan with N equal sides is polygon with sides N (the Pentagon in Washington is polygon, 5 sides);
+- a building wrapped around an open courtyard (a ring, a hollow square, the Pentagon) gets courtyard_pct;
+- an irregular plan (curved, cross, T, U, Y, wedge) is custom with an outline traced from the image;
+- per tier, the same applies, so a round tower on a square podium is a rect tier then a circle tier.
+Notes are plain sentences for a non-expert.`
 
 export interface ReadRequest {
   image: string // base64, no data: prefix
@@ -89,18 +104,17 @@ export function toDraft(r: Reading, widthHint?: number): Partial<Design> {
     w *= k
     dp *= k
   }
-  const width = half(clamp(w, 6, 100))
-  const shape = r.shape
+  const width = half(clamp(w, 6, 150))
+  const plan = planFrom(r.shape, r.sides, r.courtyard_pct, r.outline)
   return {
-    shape,
+    ...plan,
     width,
-    depth: shape === 'circle' ? width : half(clamp(dp, 6, 100)),
+    depth: plan.shape === 'circle' ? width : half(clamp(dp, 6, 150)),
     towerFloors: Math.round(clamp(r.tower_floors, 1, 80)),
     podiumFloors: Math.round(clamp(r.podium_floors, 0, 8)),
     podiumFill: r.podium_floors > 0 && r.podium_wider,
     taper: Math.round(clamp(r.taper_pct, 0, 60)),
     twist: Math.round(clamp(r.twist_deg, -120, 120) / 5) * 5,
-    outline: undefined,
     ...tiersFrom(r, w > 0 && r.width_m > 0 ? w / r.width_m : 1),
     facade: {
       wall: colour(r.wall_colour, DEFAULT_FACADE.wall),
@@ -117,17 +131,41 @@ export function toDraft(r: Reading, widthHint?: number): Partial<Design> {
   }
 }
 
+type Shape = Reading['shape']
+
+/** Plan fields for the editor: polygon sides, courtyard share and a cleaned traced outline. */
+export function planFrom(shape: Shape, sides?: number, courtyardPct?: number, outline?: number[][]) {
+  const pts = (outline ?? [])
+    .filter((p) => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+    .slice(0, 40)
+    .map((p) => [Math.max(-0.5, Math.min(0.5, p[0])), Math.max(-0.5, Math.min(0.5, p[1]))] as [number, number])
+  // a traced outline needs real area, else fall back to a box
+  let a = 0
+  for (let i = 0; i < pts.length; i++) a += pts[i][0] * pts[(i + 1) % pts.length][1] - pts[(i + 1) % pts.length][0] * pts[i][1]
+  const traced = shape === 'custom' && pts.length >= 3 && Math.abs(a / 2) > 0.05
+  const n = Math.round(clamp(sides ?? 0, 0, 12))
+  const sh: Shape = shape === 'custom' && !traced ? 'rect' : shape === 'polygon' && n < 3 ? 'hexagon' : shape
+  const cy = clamp(courtyardPct ?? 0, 0, 80)
+  return {
+    shape: sh,
+    sides: sh === 'polygon' ? n : undefined,
+    courtyard: cy >= 10 ? Math.round(cy) / 100 : undefined,
+    outline: traced ? pts : undefined,
+  }
+}
+
 /** Stacked tiers when the reading found more than one; floors are made to add up to the tower. */
 function tiersFrom(r: Reading, k: number): Partial<Design> {
   const ts = (r.tiers ?? []).filter((t) => t && t.floors >= 1).slice(0, 6)
   if (ts.length < 2) return { tiers: undefined }
   const tiers = ts.map((t) => {
-    const width = half(clamp(t.width_m * k, 4, 100))
+    const width = half(clamp(t.width_m * k, 4, 150))
+    const plan = planFrom(t.shape, t.sides, t.courtyard_pct, t.outline)
     return {
       floors: Math.round(clamp(t.floors, 1, 80)),
-      shape: t.shape,
+      ...plan,
       width,
-      depth: t.shape === 'circle' ? width : half(clamp(t.depth_m * k, 4, 100)),
+      depth: plan.shape === 'circle' ? width : half(clamp(t.depth_m * k, 4, 150)),
       dx: half(clamp(t.shift_x_m * k, -40, 40)),
       dy: half(clamp(t.shift_y_m * k, -40, 40)),
     }
@@ -158,7 +196,7 @@ export function validate(body: unknown): ReadRequest {
 }
 
 // Parse leniently: the massing fields must be there; look fields fall back to defaults.
-const Lenient = Reading.partial({ wall_colour: true, glass_colour: true, frame_colour: true, glazing_pct: true, podium_glazed: true, balconies: true, roof_steps: true, roof_step_m: true, notes: true, tiers: true, roof: true, window_pattern: true })
+const Lenient = Reading.extend({ tiers: z.array(TierZ.partial({ sides: true, courtyard_pct: true, outline: true })).optional() }).partial({ wall_colour: true, glass_colour: true, frame_colour: true, glazing_pct: true, podium_glazed: true, balconies: true, roof_steps: true, roof_step_m: true, notes: true, tiers: true, roof: true, window_pattern: true, sides: true, courtyard_pct: true, outline: true })
 function parseReading(text: string): Reading | null {
   try {
     const p = Lenient.safeParse(JSON.parse(text))
@@ -175,7 +213,10 @@ function parseReading(text: string): Reading | null {
       roof_steps: d.roof_steps ?? 0,
       roof_step_m: d.roof_step_m ?? 2,
       notes: d.notes ?? [],
-      tiers: d.tiers ?? [],
+      tiers: (d.tiers ?? []).map((t) => ({ sides: 0, courtyard_pct: 0, outline: [], ...t })),
+      sides: d.sides ?? 0,
+      courtyard_pct: d.courtyard_pct ?? 0,
+      outline: d.outline ?? [],
       roof: d.roof ?? 'flat',
       window_pattern: d.window_pattern ?? 'ribbon',
     }
