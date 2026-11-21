@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Design, DesignShape } from '../rules/engine'
 import { readPlan, readSide, type Pixels, type Reading } from './imageToDesign'
 
@@ -53,6 +53,24 @@ async function loadPixels(file: Blob, max = 320): Promise<{ px: Pixels; url: str
   return { px: { width: w, height: h, data: id.data }, url: c.toDataURL('image/png') }
 }
 
+const API = '/api/read-building'
+interface AiResult { draft: Partial<Design>; notes: string[]; confidence: 'low' | 'medium' | 'high'; view: string }
+
+/** Shrink a photo to at most 1024 px JPEG before it goes to the reading service. */
+async function toJpeg(file: Blob, max = 1024): Promise<{ data: string; url: string }> {
+  const bmp = await createImageBitmap(file)
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height))
+  const c = document.createElement('canvas')
+  c.width = Math.round(bmp.width * k)
+  c.height = Math.round(bmp.height * k)
+  const ctx = c.getContext('2d')!
+  ctx.fillStyle = '#fff'
+  ctx.fillRect(0, 0, c.width, c.height)
+  ctx.drawImage(bmp, 0, 0, c.width, c.height)
+  const url = c.toDataURL('image/jpeg', 0.85)
+  return { data: url.slice(url.indexOf(',') + 1), url }
+}
+
 /** Picture with the detected building outlined, for the user to judge the reading. */
 function preview(url: string, r: Reading): Promise<string> {
   return new Promise((res) => {
@@ -96,6 +114,42 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
   const [reading, setReading] = useState<{ r: Reading; img: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const [ai, setAi] = useState(false) // reading service available (Vercel with a key)
+  const [aiPic, setAiPic] = useState<{ url: string; res?: AiResult } | null>(null)
+
+  useEffect(() => {
+    fetch(API)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => setAi(Boolean(j?.configured)))
+      .catch(() => setAi(false))
+  }, [])
+
+  const upload = async (file?: File) => {
+    if (!file) return
+    setErr('')
+    setPic(null)
+    setReading(null)
+    setBusy(true)
+    try {
+      const { data, url } = await toJpeg(file)
+      setAiPic({ url })
+      const r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ image: data, mediaType: 'image/jpeg' }) })
+      const j = await r.json().catch(() => ({ error: 'The reading service did not answer.' }))
+      if (!r.ok) throw new Error(j.error ?? 'The picture could not be read.')
+      setAiPic({ url, res: j as AiResult })
+    } catch (e) {
+      setAiPic(null)
+      setErr(e instanceof Error ? e.message : 'The picture could not be read.')
+    }
+    setBusy(false)
+  }
+  const useAiDraft = () => {
+    const dr = aiPic?.res?.draft
+    if (!dr) return
+    setDesign({ ...d, offsetX: 0, offsetY: 0, rotation: 0, ...dr, outline: d.outline, trim: false })
+    setAiPic(null)
+    setGallery(false)
+  }
 
   const analyse = async (p = pic, m = mode, w = widthM) => {
     if (!p) return
@@ -141,8 +195,17 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
         </button>
       </div>
 
-      {gallery && !pic && (
+      {gallery && !pic && !aiPic && (
         <div className="samples">
+          {ai ? (
+            <label className="upload">
+              <input type="file" accept="image/jpeg,image/png,image/webp" disabled={busy} onChange={(e) => (upload(e.target.files?.[0]), (e.target.value = ''))} />
+              <b>Upload a photo, plan or sketch</b>
+              <span className="muted small">Read by AI into a draft you can fine-tune. Or try a sample below.</span>
+            </label>
+          ) : (
+            <div className="muted small">Uploading your own photo needs the AI reading service, which isn't switched on for this copy of the site.</div>
+          )}
           <div className="muted small">Pick a sample picture. The tool reads it and drafts a building you can then fine-tune.</div>
           <div className="sgrid">
             {SAMPLES.map((sm) => (
@@ -157,6 +220,35 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
       )}
 
       {err && <div className="error">{err}</div>}
+      {aiPic && (
+        <div className="picread">
+          <div className="small">
+            <b>Your picture</b> · {aiPic.res ? `read by AI as a ${aiPic.res.view} view, ${aiPic.res.confidence} confidence` : 'being read by AI…'}
+          </div>
+          <img className="picprev" src={aiPic.url} alt="Your uploaded picture" />
+          {busy && <div className="muted small">Reading the picture, this takes a few seconds…</div>}
+          {aiPic.res && (
+            <ul className="picnotes">
+              {aiPic.res.notes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+              <li>
+                Draft: {aiPic.res.draft.shape} footprint {aiPic.res.draft.width} × {aiPic.res.draft.depth} m, {aiPic.res.draft.towerFloors} tower floors
+                {aiPic.res.draft.podiumFloors ? ` on a ${aiPic.res.draft.podiumFloors}-floor podium` : ''}.
+              </li>
+            </ul>
+          )}
+          <div className="row">
+            <button className="primary" disabled={!aiPic.res} onClick={useAiDraft}>
+              Use as draft
+            </button>
+            <button disabled={busy} onClick={() => setAiPic(null)}>
+              Back
+            </button>
+          </div>
+          <div className="muted small">Your picture is sent to the AI service only to read it, and is not stored.</div>
+        </div>
+      )}
       {pic && (
         <div className="picread">
           <div className="small">

@@ -164,6 +164,9 @@ footer { padding-top: 14px; line-height: 1.5; }
 .field.inline { flex-direction: row; align-items: center; justify-content: space-between; }
 .field.inline input { width: 80px; }
 .samples { display: flex; flex-direction: column; gap: 7px; }
+.upload { display: flex; flex-direction: column; gap: 2px; border: 1px dashed #c2410c; border-radius: 10px; padding: 10px; cursor: pointer; background: #fff7ed; position: relative; }
+.upload input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.upload b { color: #c2410c; font-size: 13px; }
 .sgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .sgrid button { position: relative; display: flex; flex-direction: column; gap: 3px; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 4px; font-size: 11px; color: var(--ink); text-align: left; }
 .sgrid button:hover { border-color: var(--ink); }
