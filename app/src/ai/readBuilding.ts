@@ -224,3 +224,60 @@ export async function readBuilding(opts: ReadOptions, req: ReadRequest): Promise
   if (!r.is_building) throw new ReadError('That picture does not seem to show a building. Try a photo, plan or sketch of one.', 422)
   return { draft: toDraft(r, req.widthM), notes: r.notes.slice(0, 5), confidence: r.confidence, view: r.view }
 }
+
+export const GEMINI_MODEL = 'gemini-3.8-flash'
+const GEMINI_FALLBACK = 'gemini-3.5-flash-lite'
+
+/** One vision call to Google's Gemini API directly (free tier with an AI Studio key). */
+export async function readBuildingGemini(opts: ReadOptions, req: ReadRequest): Promise<ReadResult> {
+  const hint = req.widthM ? ` The user says the building is about ${req.widthM} m wide.` : ''
+  const prompt = `Read this building and estimate its massing.${hint}\nReply with only a JSON object matching this JSON schema:\n${JSON.stringify(SCHEMA)}`
+  const models = [...new Set([opts.model || GEMINI_MODEL, GEMINI_FALLBACK])]
+  let text = ''
+  for (let i = 0; i < models.length; i++) {
+    const res = await (opts.fetch ?? fetch)(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(models[i])}:generateContent`, {
+      signal: AbortSignal.timeout(100_000),
+      method: 'POST',
+      headers: { 'x-goog-api-key': opts.apiKey, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM }] },
+        contents: [{ role: 'user', parts: [{ inlineData: { mimeType: req.mediaType, data: req.image } }, { text: prompt }] }],
+        generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 8192, temperature: 0.2 },
+      }),
+    })
+    const raw = await res.text().catch(() => '')
+    let body: {
+      error?: { message?: string; code?: number; status?: string }
+      promptFeedback?: { blockReason?: string }
+      candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[]
+    } = {}
+    try {
+      body = JSON.parse(raw)
+    } catch {
+      /* not JSON */
+    }
+    if (!res.ok || body.error) {
+      const status = body.error?.code ?? res.status
+      const why = upstream(body.error?.message ?? raw)
+      console.error('Gemini error', models[i], status, raw.slice(0, 800))
+      if (status === 400 && /api key/i.test(why)) throw new ReadError(`The Gemini key was not accepted (${why}). Check GEMINI_API_KEY in Vercel.`, 502)
+      if (status === 401 || status === 403) throw new ReadError(`The Gemini key was not accepted${why ? ` (${why})` : ''}. Check GEMINI_API_KEY in Vercel.`, 502)
+      if (i + 1 < models.length && (status === 404 || status === 429 || status >= 500)) continue // try the lighter model
+      if (status === 429) throw new ReadError('The free Gemini quota is used up for now. Try again in a minute, or tomorrow.', 502)
+      throw new ReadError(`The reading service failed (${status}${why ? `: ${why}` : ''}). Try again.`, 502)
+    }
+    if (body.promptFeedback?.blockReason) throw new ReadError('This picture could not be read. Try another one.', 422)
+    text = (body.candidates?.[0]?.content?.parts ?? [])
+      .filter((p) => !p.thought && p.text)
+      .map((p) => p.text)
+      .join('')
+      .trim()
+    const m = /\{[\s\S]*\}/.exec(text)
+    text = m ? m[0] : text
+    if (parseReading(text) || i + 1 >= models.length) break
+  }
+  const r = parseReading(text)
+  if (!r) throw new ReadError('The reading came back incomplete. Please try again.', 502)
+  if (!r.is_building) throw new ReadError('That picture does not seem to show a building. Try a photo, plan or sketch of one.', 422)
+  return { draft: toDraft(r, req.widthM), notes: r.notes.slice(0, 5), confidence: r.confidence, view: r.view }
+}

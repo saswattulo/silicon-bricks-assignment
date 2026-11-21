@@ -1,13 +1,14 @@
 // Vercel serverless function: POST a building picture, get back a draft design.
-// The OpenRouter key lives only in the Vercel environment (OPENROUTER_API_KEY); the browser never sees it.
-// OPENROUTER_MODEL optionally overrides the vision model (default anthropic/claude-sonnet-5.5).
+// Keys live only in the Vercel environment; the browser never sees them.
+//  - GEMINI_API_KEY (Google AI Studio) is used first when set; GEMINI_MODEL overrides gemini-3.8-flash.
+//  - OPENROUTER_API_KEY otherwise; OPENROUTER_MODEL overrides anthropic/claude-sonnet-5.5.
 // GET tells the page whether the key is set, so it can offer photo upload or fall back to samples.
-import { readBuilding, validate, ReadError } from '../src/ai/readBuilding.js'
+import { readBuilding, readBuildingGemini, validate, ReadError } from '../src/ai/readBuilding.js'
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } })
 
-const configured = () => Boolean(process.env.OPENROUTER_API_KEY)
+const configured = () => Boolean(process.env.GEMINI_API_KEY || process.env.OPENROUTER_API_KEY)
 
 export function GET() {
   return json({ configured: configured() })
@@ -21,7 +22,14 @@ export async function POST(request: Request) {
   if (origin && host && new URL(origin).host !== host) return json({ error: 'Not allowed.' }, 403)
   try {
     const req = validate(await request.json().catch(() => null))
-    const result = await readBuilding({ apiKey: process.env.OPENROUTER_API_KEY!, model: process.env.OPENROUTER_MODEL }, req)
+    const env = process.env
+    const result = env.GEMINI_API_KEY
+      ? await readBuildingGemini({ apiKey: env.GEMINI_API_KEY, model: env.GEMINI_MODEL }, req).catch((e) => {
+          // fall back to OpenRouter if it is also set up
+          if (env.OPENROUTER_API_KEY && e instanceof ReadError && e.status === 502) return readBuilding({ apiKey: env.OPENROUTER_API_KEY, model: env.OPENROUTER_MODEL }, req)
+          throw e
+        })
+      : await readBuilding({ apiKey: env.OPENROUTER_API_KEY!, model: env.OPENROUTER_MODEL }, req)
     return json(result)
   } catch (e) {
     if (e instanceof ReadError) return json({ error: e.message }, e.status)

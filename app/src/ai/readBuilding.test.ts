@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { readBuilding, toDraft, validate, type Reading } from './readBuilding'
+import { readBuildingGemini, readBuilding, toDraft, validate, type Reading } from './readBuilding'
 
 const base: Reading = {
   is_building: true, view: 'perspective', shape: 'circle', width_m: 30, depth_m: 28,
@@ -72,5 +72,25 @@ describe('AI picture reading', () => {
     await expect(readBuilding(fake(null, 200, 'no').opts, img)).rejects.toThrow(/could not be read/)
     await expect(readBuilding(fake('not json').opts, img)).rejects.toThrow(/incomplete/)
     await expect(readBuilding(fake(null, 402).opts, img)).rejects.toThrow(/credit/)
+  })
+})
+
+describe('Gemini reading', () => {
+  it('sends the picture inline and reads the JSON reply', async () => {
+    const { opts, f } = seq([200, { candidates: [{ content: { parts: [{ text: JSON.stringify(base) }] } }] }])
+    const r = await readBuildingGemini(opts, img)
+    expect(r.draft.towerFloors).toBe(22)
+    const [url, init] = f.mock.calls[0]
+    expect(url).toContain('models/gemini-3.8-flash:generateContent')
+    expect((init.headers as Record<string, string>)['x-goog-api-key']).toBe('k')
+    expect(JSON.parse(init.body as string).contents[0].parts[0].inlineData.mimeType).toBe('image/jpeg')
+  })
+  it('moves to the lighter model when the first is unavailable or over quota', async () => {
+    const { opts, f } = seq([429, { error: { code: 429, message: 'quota' } }], [200, { candidates: [{ content: { parts: [{ text: JSON.stringify(base) }] } }] }])
+    await readBuildingGemini(opts, img)
+    expect(f.mock.calls[1][0]).toContain('gemini-3.5-flash-lite')
+  })
+  it('explains a bad key', async () => {
+    await expect(readBuildingGemini(seq([400, { error: { code: 400, message: 'API key not valid' } }]).opts, img)).rejects.toThrow(/GEMINI_API_KEY/)
   })
 })
