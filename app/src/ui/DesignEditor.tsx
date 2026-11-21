@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type DragEvent } from 'react'
 import type { Design, DesignShape } from '../rules/engine'
 import { readPlan, readSide, type Pixels, type Reading } from './imageToDesign'
 
@@ -117,12 +117,33 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
   const [ai, setAi] = useState(false) // reading service available (Vercel with a key)
   const [aiPic, setAiPic] = useState<{ url: string; res?: AiResult } | null>(null)
 
-  useEffect(() => {
-    fetch(API)
+  // Ask the server whether photo reading is on. Asked again each time the pictures open, so a tab
+  // opened before the key was added still finds it.
+  const probe = () =>
+    fetch(API, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => setAi(Boolean(j?.configured)))
       .catch(() => setAi(false))
+  useEffect(() => {
+    probe()
+    // Stop a picture dropped elsewhere on the page from navigating the browser to the file.
+    const stop = (e: Event) => e.preventDefault()
+    window.addEventListener('dragover', stop)
+    window.addEventListener('drop', stop)
+    return () => (window.removeEventListener('dragover', stop), window.removeEventListener('drop', stop))
   }, [])
+  useEffect(() => {
+    if (gallery) probe()
+  }, [gallery])
+  // A picture dropped anywhere on the designer is read instead of making the browser open the file.
+  const onDrop = (e: DragEvent) => {
+    e.preventDefault()
+    const f = e.dataTransfer.files?.[0]
+    if (f && ai) {
+      setGallery(true)
+      upload(f)
+    }
+  }
 
   const upload = async (file?: File) => {
     if (!file) return
@@ -187,7 +208,7 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
   }
 
   return (
-    <div className="designer">
+    <div className="designer" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       <div className="dhead">
         <b>Shape your own building</b>
         <button className="link" onClick={() => setGallery((g) => !g)}>
@@ -204,7 +225,12 @@ export default function DesignEditor({ design: d, setDesign, floorH }: Props) {
               <span className="muted small">Read by AI into a draft you can fine-tune. Or try a sample below.</span>
             </label>
           ) : (
-            <div className="muted small">Uploading your own photo needs the AI reading service, which isn't switched on for this copy of the site.</div>
+            <div className="muted small">
+              Uploading your own photo needs the AI reading service, which isn't switched on for this copy of the site.{' '}
+              <button className="link" onClick={probe}>
+                Check again
+              </button>
+            </div>
           )}
           <div className="muted small">Pick a sample picture. The tool reads it and drafts a building you can then fine-tune.</div>
           <div className="sgrid">
