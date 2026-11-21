@@ -168,6 +168,9 @@ export async function readBuilding(opts: ReadOptions, req: ReadRequest): Promise
     { text: `${ask}\nReply with only a JSON object (no code fence) matching this JSON schema:\n${JSON.stringify(SCHEMA)}` },
   ]
   let text = ''
+  // OpenRouter refuses (402) a request whose max_tokens the remaining credit can't cover, even
+  // when the answer would be short, so ask for less room before giving up.
+  let maxTokens = 2500
   for (let i = 0; i < attempts.length; i++) {
     const at = attempts[i]
     const res = await (opts.fetch ?? fetch)(ENDPOINT, {
@@ -176,7 +179,7 @@ export async function readBuilding(opts: ReadOptions, req: ReadRequest): Promise
       headers: { authorization: `Bearer ${opts.apiKey}`, 'content-type': 'application/json', 'x-title': 'Plot Envelope Bangkok' },
       body: JSON.stringify({
         model: opts.model || DEFAULT_MODEL,
-        max_tokens: 4000,
+        max_tokens: maxTokens,
         reasoning: { effort: 'low' },
         messages: [
           { role: 'system', content: SYSTEM },
@@ -196,8 +199,13 @@ export async function readBuilding(opts: ReadOptions, req: ReadRequest): Promise
     if (!res.ok || body.error) {
       const why = upstream(body.error?.message ?? raw)
       console.error('OpenRouter error', status, raw.slice(0, 800))
-      if (status === 401) throw new ReadError('The reading service key is not valid.', 502)
-      if (status === 402) throw new ReadError('The reading service is out of credit.', 502)
+      if (status === 401) throw new ReadError(`The reading service key was not accepted${why ? ` (${why})` : ''}. Check OPENROUTER_API_KEY in Vercel.`, 502)
+      if (status === 402 && maxTokens > 800) {
+        maxTokens = 800
+        i--
+        continue
+      }
+      if (status === 402) throw new ReadError(`The reading service account is out of credit${why ? ` (${why})` : ''}. Add credit on OpenRouter.`, 502)
       if (status === 429) throw new ReadError('The reading service is busy. Try again in a minute.', 502)
       if (i + 1 < attempts.length && status !== 408) continue // try the plain-prompt request
       throw new ReadError(`The reading service failed (${status}${why ? `: ${why}` : ''}). Try again.`, 502)

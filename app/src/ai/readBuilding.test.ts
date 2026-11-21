@@ -31,6 +31,11 @@ describe('AI picture reading', () => {
     expect(r.draft.towerFloors).toBe(22)
     expect(r.draft.facade?.glazing).toBe(45)
   })
+  it('asks for fewer tokens when credit is low', async () => {
+    const { opts, f } = seq([402, { error: { message: 'requires more credits', code: 402 } }], [200, { choices: [{ message: { content: JSON.stringify(base) } }] }])
+    await readBuilding(opts, img)
+    expect(JSON.parse(f.mock.calls[1][1].body as string).max_tokens).toBe(800)
+  })
   it('shows the upstream reason when both requests fail', async () => {
     const e = { error: { message: 'model not found', code: 400 } }
     await expect(readBuilding(seq([400, e], [400, e]).opts, img)).rejects.toThrow(/400: model not found/)
